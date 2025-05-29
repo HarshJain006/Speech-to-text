@@ -9,6 +9,7 @@ import soundfile as sf
 import io
 import uuid
 import re
+import os
 
 # Custom CSS for styling
 st.markdown("""
@@ -158,18 +159,37 @@ def process_audio(audio, sr=16000):
         return None, "0.0 seconds", "No audio detected"
     try:
         if isinstance(audio, tuple):  # From mic_recorder
-            sr, y = audio
+            input_sr, y = audio
+            if len(y) == 0:
+                return None, "0.0 seconds", "Empty audio data from microphone"
+            y = y.astype(np.float32)
+            if len(y.shape) == 2:
+                y = np.mean(y, axis=1)
+            # Resample if necessary
+            if input_sr != sr:
+                y = librosa.resample(y, orig_sr=input_sr, target_sr=sr)
         else:  # From file upload
-            y, sr = librosa.load(audio, sr=16000)
-        y = y.astype(np.float32)
-        if len(y.shape) == 2:
-            y = np.mean(y, axis=1)
-        if len(y) == 0:
-            return None, "0.0 seconds", "No audio data found in file."
+            # Validate file extension
+            if hasattr(audio, 'name'):
+                ext = os.path.splitext(audio.name)[1].lower()
+                if ext not in ['.wav', '.mp3']:
+                    return None, "0.0 seconds", f"Unsupported file format: {ext}. Please upload WAV or MP3."
+            # Save uploaded file temporarily to ensure soundfile compatibility
+            temp_file = f"temp_audio_{uuid.uuid4()}.wav"
+            with open(temp_file, "wb") as f:
+                f.write(audio.read())
+            try:
+                y, input_sr = librosa.load(temp_file, sr=sr, mono=True, backend="soundfile")
+            finally:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+            if len(y) == 0:
+                return None, "0.0 seconds", "No audio data found in file"
+        
         audio_duration = len(y) / sr
         audio_duration_str = f"{audio_duration:.2f} seconds"
         if np.max(np.abs(y)) > 0:
-            y /= np.max(np.abs(y))
+            y /= np.max(np.abs(y))  # Normalize
         return (sr, y), audio_duration_str, None
     except Exception as e:
         return None, "0.0 seconds", f"Error processing audio: {str(e)}"
