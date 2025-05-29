@@ -174,17 +174,24 @@ def process_audio(audio, sr=16000):
                 ext = os.path.splitext(audio.name)[1].lower()
                 if ext not in ['.wav', '.mp3']:
                     return None, "0.0 seconds", f"Unsupported file format: {ext}. Please upload WAV or MP3."
-            # Save uploaded file temporarily to ensure soundfile compatibility
-            temp_file = f"temp_audio_{uuid.uuid4()}.wav"
+            # Save uploaded file temporarily
+            temp_file = f"temp_audio_{uuid.uuid4()}{ext if hasattr(audio, 'name') else '.wav'}"
             with open(temp_file, "wb") as f:
                 f.write(audio.read())
             try:
-                y, input_sr = librosa.load(temp_file, sr=sr, mono=True)
+                # Use soundfile directly to avoid audioread/sunau
+                y, input_sr = sf.read(temp_file)
+                if len(y) == 0:
+                    return None, "0.0 seconds", "No audio data found in file"
+                y = y.astype(np.float32)
+                if len(y.shape) == 2:
+                    y = np.mean(y, axis=1)
+                # Resample if necessary
+                if input_sr != sr:
+                    y = librosa.resample(y, orig_sr=input_sr, target_sr=sr)
             finally:
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
-            if len(y) == 0:
-                return None, "0.0 seconds", "No audio data found in file"
         
         audio_duration = len(y) / sr
         audio_duration_str = f"{audio_duration:.2f} seconds"
