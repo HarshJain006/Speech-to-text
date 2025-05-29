@@ -5,7 +5,6 @@ import torch
 from transformers import pipeline
 import librosa
 import soundfile as sf
-import sounddevice as sd
 import tempfile
 import uuid
 import re
@@ -85,6 +84,11 @@ st.markdown("""
             border-radius: 8px;
             background-color: #FFFFFF;
         }
+        .stAudioInput > div > div {
+            border: 1px solid #4169E1;
+            border-radius: 8px;
+            background-color: #FFFFFF;
+        }
         .status-box {
             background-color: #F0F0F0;
             padding: 10px;
@@ -115,41 +119,8 @@ if not hasattr(st.session_state, 'initialized'):
     st.session_state.transcription_proc_time_hi = "0.0 seconds"
     st.session_state.status_en_hi = "Speech2Text is OFF"
     st.session_state.status_hi = "Speech2Text is OFF"
-    st.session_state.working_devices = []
     st.session_state.recorded_audio = None
-    st.session_state.device_error = None
     st.session_state.recorded_audio_path = None
-
-# Device enumeration and testing functions
-def list_input_devices():
-    try:
-        logger.debug("Enumerating audio devices...")
-        devices = sd.query_devices()
-        input_devices = []
-        for i, dev in enumerate(devices):
-            if dev['max_input_channels'] > 0:
-                input_devices.append((i, dev['name']))
-        logger.debug(f"Found {len(input_devices)} input devices: {input_devices}")
-        return input_devices
-    except Exception as e:
-        logger.error(f"Error enumerating devices: {str(e)}")
-        return []
-
-def test_device(device_index, duration=1, fs=44100):
-    try:
-        logger.debug(f"Testing device index {device_index}")
-        sd.default.device = (device_index, None)
-        recording = sd.rec(int(duration * fs), samplerate=fs, channels=1)
-        sd.wait()
-        if np.any(np.abs(recording) > 0.001):
-            logger.debug(f"Device {device_index} is functional")
-            return True
-        else:
-            logger.debug(f"Device {device_index} recorded silence")
-            return False
-    except Exception as e:
-        logger.error(f"Error testing device {device_index}: {str(e)}")
-        return False
 
 # Model loading/unloading functions
 def load_english_hindi(model_size="tiny"):
@@ -213,15 +184,23 @@ def process_audio(audio, sr=16000):
     if audio is None:
         return None, "0.0 seconds", "No audio detected"
     try:
-        if isinstance(audio, tuple):  # From sounddevice
-            input_sr, y = audio
-            if len(y) == 0:
-                return None, "0.0 seconds", "Empty audio data from microphone"
-            y = y.astype(np.float32)
-            if len(y.shape) == 2:
-                y = np.mean(y, axis=1)
-            if input_sr != sr:
-                y = librosa.resample(y, orig_sr=input_sr, target_sr=sr)
+        if isinstance(audio, bytes):  # From st.audio_input
+            # Write bytes to temporary WAV file
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
+                tmpfile.write(audio)
+                tmpfile_path = tmpfile.name
+            try:
+                y, input_sr = sf.read(tmpfile_path)
+                if len(y) == 0:
+                    return None, "0.0 seconds", "Empty audio data from microphone"
+                y = y.astype(np.float32)
+                if len(y.shape) == 2:
+                    y = np.mean(y, axis=1)
+                if input_sr != sr:
+                    y = librosa.resample(y, orig_sr=input_sr, target_sr=sr)
+            finally:
+                if os.path.exists(tmpfile_path):
+                    os.remove(tmpfile_path)
         else:  # From file upload
             if hasattr(audio, 'name'):
                 ext = os.path.splitext(audio.name)[1].lower()
@@ -366,72 +345,24 @@ def main():
 
         # Microphone recording
         st.markdown("### Record Audio", unsafe_allow_html=True)
-        if st.button("Scan Devices and Record", key="scan_record_en_hi"):
-            try:
-                logger.debug("Scanning devices for English/Hindi tab")
-                st.session_state.working_devices = []
-                devices = list_input_devices()
-                if not devices:
-                    st.session_state.device_error = "No audio input devices detected. Please check your microphone."
-                else:
-                    for idx, name in devices:
-                        if test_device(idx):
-                            st.session_state.working_devices.append((idx, name))
-                    if not st.session_state.working_devices:
-                        st.session_state.device_error = "No working microphones found! Please ensure your microphone is connected and functional."
-                    else:
-                        st.session_state.device_error = None
-                        st.success(f"Found {len(st.session_state.working_devices)} working microphone(s)")
-            except Exception as e:
-                logger.error(f"Error during device scan: {str(e)}")
-                st.session_state.device_error = f"Error scanning devices: {str(e)}"
-
-        if st.session_state.device_error:
-            st.error(f"Error: {st.session_state.device_error}")
-        elif not st.session_state.working_devices:
-            st.info("Click 'Scan Devices and Record' to scan for available microphones.")
-        else:
-            device_names = [name for idx, name in st.session_state.working_devices]
-            chosen_name = st.selectbox("Choose microphone input device", device_names, key="mic_select_en_hi")
-            chosen_idx = next(idx for idx, name in st.session_state.working_devices if name == chosen_name)
-            
-            duration = st.number_input(
-                "Enter recording duration (seconds)",
-                min_value=1,
-                max_value=600,
-                value=5,
-                step=1,
-                key="record_duration_en_hi"
-            )
-            
-            if st.button("Record Audio", key="record_en_hi"):
+        recorded_audio_en_hi = st.audio_input("Record audio using your microphone", key="audio_input_en_hi")
+        if recorded_audio_en_hi:
+            st.session_state.recorded_audio = recorded_audio_en_hi.getvalue()
+            st.audio(st.session_state.recorded_audio, format="audio/wav")
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
+                tmpfile.write(st.session_state.recorded_audio)
+                y, sr = sf.read(tmpfile.name)
+                rms = np.sqrt(np.mean(y**2))
+                st.write(f"Recorded audio RMS amplitude: {rms:.6f}")
+                if rms < 1e-4:
+                    st.warning("Warning: Recorded audio seems silent!")
+                st.session_state.recorded_audio_path = tmpfile.name
+            if os.path.exists(st.session_state.recorded_audio_path):
                 try:
-                    sd.default.device = (chosen_idx, None)
-                    st.info(f"Recording for {duration} seconds from '{chosen_name}'...")
-                    recording = sd.rec(int(duration * 44100), samplerate=44100, channels=1)
-                    sd.wait()
-                    st.success("Recording finished!")
-                    
-                    st.session_state.recorded_audio = (44100, recording)
-                    rms = np.sqrt(np.mean(recording**2))
-                    st.write(f"Recorded audio RMS amplitude: {rms:.6f}")
-                    if rms < 1e-4:
-                        st.warning("Warning: Recorded audio seems silent!")
-                    
-                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
-                        sf.write(tmpfile.name, recording.astype(np.float32), 44100)
-                        st.audio(tmpfile.name)
-                        st.session_state.recorded_audio_path = tmpfile.name
+                    os.remove(st.session_state.recorded_audio_path)
+                    st.session_state.recorded_audio_path = None
                 except Exception as e:
-                    logger.error(f"Error recording audio: {str(e)}")
-                    st.error(f"Error recording audio: {str(e)}")
-                finally:
-                    if st.session_state.recorded_audio_path and os.path.exists(st.session_state.recorded_audio_path):
-                        try:
-                            os.remove(st.session_state.recorded_audio_path)
-                            st.session_state.recorded_audio_path = None
-                        except Exception as e:
-                            logger.error(f"Error cleaning up temporary file: {str(e)}")
+                    logger.error(f"Error cleaning up temporary file: {str(e)}")
 
         uploaded_file_en_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_en_hi")
         
@@ -442,14 +373,7 @@ def main():
                 st.session_state.transcription_en_hi = transcription
                 st.session_state.transcription_duration_en_hi = duration
                 st.session_state.transcription_proc_time_en_hi = proc_time
-                # Clean up recorded audio after transcription
                 st.session_state.recorded_audio = None
-                if st.session_state.recorded_audio_path and os.path.exists(st.session_state.recorded_audio_path):
-                    try:
-                        os.remove(st.session_state.recorded_audio_path)
-                        st.session_state.recorded_audio_path = None
-                    except Exception as e:
-                        logger.error(f"Error cleaning up temporary file after transcription: {str(e)}")
             else:
                 st.error("No audio input provided. Please record or upload an audio file.")
         
@@ -473,72 +397,24 @@ def main():
 
         # Microphone recording
         st.markdown("### Record Audio", unsafe_allow_html=True)
-        if st.button("Scan Devices and Record", key="scan_record_hi"):
-            try:
-                logger.debug("Scanning devices for Hindi-only tab")
-                st.session_state.working_devices = []
-                devices = list_input_devices()
-                if not devices:
-                    st.session_state.device_error = "No audio input devices detected. Please check your microphone."
-                else:
-                    for idx, name in devices:
-                        if test_device(idx):
-                            st.session_state.working_devices.append((idx, name))
-                    if not st.session_state.working_devices:
-                        st.session_state.device_error = "No working microphones found! Please ensure your microphone is connected and functional."
-                    else:
-                        st.session_state.device_error = None
-                        st.success(f"Found {len(st.session_state.working_devices)} working microphone(s)")
-            except Exception as e:
-                logger.error(f"Error during device scan: {str(e)}")
-                st.session_state.device_error = f"Error scanning devices: {str(e)}"
-
-        if st.session_state.device_error:
-            st.error(f"Error: {st.session_state.device_error}")
-        elif not st.session_state.working_devices:
-            st.info("Click 'Scan Devices and Record' to scan for available microphones.")
-        else:
-            device_names = [name for idx, name in st.session_state.working_devices]
-            chosen_name = st.selectbox("Choose microphone input device", device_names, key="mic_select_hi")
-            chosen_idx = next(idx for idx, name in st.session_state.working_devices if name == chosen_name)
-            
-            duration = st.number_input(
-                "Enter recording duration (seconds)",
-                min_value=1,
-                max_value=600,
-                value=5,
-                step=1,
-                key="record_duration_hi"
-            )
-            
-            if st.button("Record Audio", key="record_hi"):
+        recorded_audio_hi = st.audio_input("Record audio using your microphone", key="audio_input_hi")
+        if recorded_audio_hi:
+            st.session_state.recorded_audio = recorded_audio_hi.getvalue()
+            st.audio(st.session_state.recorded_audio, format="audio/wav")
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
+                tmpfile.write(st.session_state.recorded_audio)
+                y, sr = sf.read(tmpfile.name)
+                rms = np.sqrt(np.mean(y**2))
+                st.write(f"Recorded audio RMS amplitude: {rms:.6f}")
+                if rms < 1e-4:
+                    st.warning("Warning: Recorded audio seems silent!")
+                st.session_state.recorded_audio_path = tmpfile.name
+            if os.path.exists(st.session_state.recorded_audio_path):
                 try:
-                    sd.default.device = (chosen_idx, None)
-                    st.info(f"Recording for {duration} seconds from '{chosen_name}'...")
-                    recording = sd.rec(int(duration * 44100), samplerate=44100, channels=1)
-                    sd.wait()
-                    st.success("Recording finished!")
-                    
-                    st.session_state.recorded_audio = (44100, recording)
-                    rms = np.sqrt(np.mean(recording**2))
-                    st.write(f"Recorded audio RMS amplitude: {rms:.6f}")
-                    if rms < 1e-4:
-                        st.warning("Warning: Recorded audio seems silent!")
-                    
-                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
-                        sf.write(tmpfile.name, recording.astype(np.float32), 44100)
-                        st.audio(tmpfile.name)
-                        st.session_state.recorded_audio_path = tmpfile.name
+                    os.remove(st.session_state.recorded_audio_path)
+                    st.session_state.recorded_audio_path = None
                 except Exception as e:
-                    logger.error(f"Error recording audio: {str(e)}")
-                    st.error(f"Error recording audio: {str(e)}")
-                finally:
-                    if st.session_state.recorded_audio_path and os.path.exists(st.session_state.recorded_audio_path):
-                        try:
-                            os.remove(st.session_state.recorded_audio_path)
-                            st.session_state.recorded_audio_path = None
-                        except Exception as e:
-                            logger.error(f"Error cleaning up temporary file: {str(e)}")
+                    logger.error(f"Error cleaning up temporary file: {str(e)}")
 
         uploaded_file_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_hi")
         
@@ -549,14 +425,7 @@ def main():
                 st.session_state.transcription_hi = transcription
                 st.session_state.transcription_duration_hi = duration
                 st.session_state.transcription_proc_time_hi = proc_time
-                # Clean up recorded audio after transcription
                 st.session_state.recorded_audio = None
-                if st.session_state.recorded_audio_path and os.path.exists(st.session_state.recorded_audio_path):
-                    try:
-                        os.remove(st.session_state.recorded_audio_path)
-                        st.session_state.recorded_audio_path = None
-                    except Exception as e:
-                        logger.error(f"Error cleaning up temporary file after transcription: {str(e)}")
             else:
                 st.error("No audio input provided. Please record or upload an audio file.")
         
