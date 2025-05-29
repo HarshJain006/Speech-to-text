@@ -328,7 +328,7 @@ def main():
             )
 
         st.markdown("**Record Audio**")
-        audio_input_en_hi = st_audiorec()
+        audio_input_en_hi = st_audiorec(key="audio_en_hi")
         uploaded_file_en_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_en_hi")
         
         if st.button("Transcribe with Speech2Text", key="transcribe_en_hi"):
@@ -363,7 +363,7 @@ def main():
         st.markdown(f'<div class="status-box">{st.session_state.status_hi}</div>', unsafe_allow_html=True)
 
         st.markdown("**Record Audio**")
-        audio_input_hi = st_audiorec()
+        audio_input_hi = st_audiorec(key="audio_hi")
         uploaded_file_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_hi")
         
         if st.button("Transcribe with Speech2Text", key="transcribe_hi"):
