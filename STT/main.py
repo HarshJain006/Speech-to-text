@@ -10,7 +10,7 @@ import uuid
 import re
 import os
 import logging
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, ClientSettings, AudioReceiver
+from streamlit_webrtc import webrtc_streamer, WebRtcMode
 import queue
 import av
 
@@ -87,11 +87,6 @@ st.markdown("""
             border-radius: 8px;
             background-color: #FFFFFF;
         }
-        .stAudioInput > div > div {
-            border: 1px solid #4169E1;
-            border-radius: 8px;
-            background-color: #FFFFFF;
-        }
         .status-box {
             background-color: #F0F0F0;
             padding: 10px;
@@ -106,24 +101,6 @@ st.markdown("""
         }
     </style>
 """, unsafe_allow_html=True)
-
-# Initialize session state
-if not hasattr(st.session_state, 'initialized'):
-    st.session_state.initialized = True
-    st.session_state.english_hindi_transcriber = None
-    st.session_state.english_hindi_loaded = False
-    st.session_state.hindi_only_transcriber = None
-    st.session_state.hindi_only_loaded = False
-    st.session_state.transcription_en_hi = ""
-    st.session_state.transcription_duration_en_hi = "0.0 seconds"
-    st.session_state.transcription_proc_time_en_hi = "0.0 seconds"
-    st.session_state.transcription_hi = ""
-    st.session_state.transcription_duration_hi = "0.0 seconds"
-    st.session_state.transcription_proc_time_hi = "0.0 seconds"
-    st.session_state.status_en_hi = "Speech2Text is OFF"
-    st.session_state.status_hi = "Speech2Text is OFF"
-    st.session_state.recorded_audio = None
-    st.session_state.recorded_audio_path = None
 
 # Model loading/unloading functions
 def load_english_hindi(model_size="tiny"):
@@ -188,14 +165,14 @@ def process_audio(audio, sr=16000):
         return None, "0.0 seconds", "No audio detected"
     try:
         if isinstance(audio, bytes):  # From webrtc_streamer
-            # Write bytes to temporary WAV file
+            # Write bytes to temporary file
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
                 tmpfile.write(audio)
                 tmpfile_path = tmpfile.name
             try:
                 y, input_sr = sf.read(tmpfile_path)
                 if len(y) == 0:
-                    return None, "0.0 seconds", "Empty audio data from microphone"
+                    return None, "No audio data from microphone", "0.0 seconds"
                 y = y.astype(np.float32)
                 if len(y.shape) == 2:
                     y = np.mean(y, axis=1)
@@ -208,8 +185,8 @@ def process_audio(audio, sr=16000):
             if hasattr(audio, 'name'):
                 ext = os.path.splitext(audio.name)[1].lower()
                 if ext not in ['.wav', '.mp3']:
-                    return None, "0.0 seconds", f"Unsupported file format: {ext}. Please upload WAV or MP3."
-            temp_file = f"temp_audio_{uuid.uuid4()}{ext if hasattr(audio, 'name') else '.wav'}"
+                    return None, "0.0 seconds", f"Unsupported file format:: {ext}"
+                temp_file = f"temp_audio_{uuid.uuid4()}.{ext}"
             with open(temp_file, "wb") as f:
                 f.write(audio.read())
             try:
@@ -238,7 +215,7 @@ def process_audio(audio, sr=16000):
 def transcribe_english_hindi(audio, language):
     if not st.session_state.english_hindi_loaded:
         return (
-            "Please turn on Speech2Text (English & Hindi) first",
+            "Please turn on Speech2Text first",
             "0.0 seconds",
             "No processing performed"
         )
@@ -252,11 +229,12 @@ def transcribe_english_hindi(audio, language):
             lang_code = "en" if language == "english" else "hi"
             result = st.session_state.english_hindi_transcriber(
                 {"sampling_rate": sr, "raw": y},
-                generate_kwargs={"language": lang_code, "task": "transcribe"},
+                generate_kwargs={"language": "lang_code", "task": "transcribe"},
                 return_timestamps=True
             )
             if "chunks" in result and result["chunks"]:
-                transcription = "\n".join([chunk["text"].strip() for chunk in result["chunks"] if chunk["text"].strip()])
+               transcription = "\n".join([chunk["text"].strip() for chunk in result["chunks"] if chunk["text"].strip()])
+
             else:
                 transcription = result.get("text", "").strip()
             processing_time = time.time() - start_time
@@ -273,7 +251,7 @@ def transcribe_english_hindi(audio, language):
 def transcribe_hindi_only(audio):
     if not st.session_state.hindi_only_loaded:
         return (
-            "Please turn on Speech2Text (Hindi Only) first",
+            "Please turn on Speech2Text first",
             "0.0 seconds",
             "No processing performed"
         )
@@ -311,40 +289,55 @@ def transcribe_hindi_only(audio):
 # Function to handle WebRTC audio
 def handle_webrtc_audio(key):
     audio_queue = queue.Queue()
+    st.session_state[f"recording_status_{key}"] = "Not recording"
 
-    def process_audio_frame(frame: av.AudioFrame) -> av.AudioFrame:
+    def process_audio_frame(audio_frame: av.AudioFrame) -> av.AudioFrame:
         try:
-            audio_data = frame.to_ndarray().flatten()
+            audio_data = audio_frame.to_ndarray().flatten()
             audio_queue.put(audio_data)
+            logger.debug(f"Received audio frame: {len(audio_data)} samples")
         except Exception as e:
             logger.error(f"Error processing audio frame: {str(e)}")
-        return frame
+        return audio_frame
 
     ctx = webrtc_streamer(
         key=key,
         mode=WebRtcMode.SENDONLY,
-        audio=True,
-        video=False,
-        client_settings=ClientSettings(
-            media_stream_constraints={"audio": True, "video": False}
-        ),
+        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+        media_stream_constraints={"audio": True, "video": False},
+        audio_receiver_size=2048,  # Increased buffer size
+        async_processing=True,
         audio_frame_callback=process_audio_frame
     )
+
+    # Update recording status
+    if ctx.state.playing:
+        st.session_state[f"recording_status_{key}"] = "Recording..."
+        st.info(f"Recording audio for {key}. Click 'Stop' to finish.")
+    else:
+        if st.session_state[f"recording_status_{key}"] == "Recording...":
+            st.session_state[f"recording_status_{key}"] = "Stopped"
+            st.success(f"Recording stopped for {key}.")
+
+    # Display recording status
+    st.write(f"Status: {st.session_state[f'recording_status_{key}']}")
 
     if ctx.state.playing:
         try:
             audio_frames = []
-            # Collect frames for a short duration to avoid blocking
-            timeout = 10  # seconds
+            timeout = 15  # Increased timeout to 15 seconds
             start_time = time.time()
             while time.time() - start_time < timeout and ctx.state.playing:
                 try:
                     audio_data = audio_queue.get(timeout=1)
                     if audio_data is not None:
                         audio_frames.append(audio_data)
+                        logger.debug(f"Collected audio frame, total frames: {len(audio_frames)}")
                 except queue.Empty:
+                    logger.debug("Audio queue empty, waiting...")
                     continue
             if audio_frames:
+                logger.info(f"Collected {len(audio_frames)} audio frames")
                 audio_data = np.concatenate(audio_frames, axis=0)
                 # Convert to bytes for processing
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
@@ -352,9 +345,11 @@ def handle_webrtc_audio(key):
                     with open(tmpfile.name, "rb") as f:
                         audio_bytes = f.read()
                     os.remove(tmpfile.name)
+                logger.info("Audio captured successfully")
                 return audio_bytes
             else:
-                st.warning("No audio data captured. Please try recording again.")
+                logger.warning("No audio frames captured")
+                st.warning("No audio data captured. Ensure your microphone is enabled and try again.")
                 return None
         except Exception as e:
             logger.error(f"Error in WebRTC audio processing: {str(e)}")
@@ -364,6 +359,30 @@ def handle_webrtc_audio(key):
 
 # Main app
 def main():
+    # Initialize session state
+    default_state = {
+        'initialized': True,
+        'english_hindi_transcriber': None,
+        'english_hindi_loaded': False,
+        'hindi_only_transcriber': None,
+        'hindi_only_loaded': False,
+        'transcription_en_hi': "",
+        'transcription_duration_en_hi': "0.0 seconds",
+        'transcription_proc_time_en_hi': "0.0 seconds",
+        'transcription_hi': "",
+        'transcription_duration_hi': "0.0 seconds",
+        'transcription_proc_time_hi': "0.0 seconds",
+        'status_en_hi': "Speech2Text is OFF",
+        'status_hi': "Speech2Text is OFF",
+        'recorded_audio': None,
+        'recorded_audio_path': None,
+        'recording_status_audio_en_hi': "Not recording",
+        'recording_status_audio_hi': "Not recording"
+    }
+    for key, value in default_state.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
     st.markdown('<div class="header"><h1>Speech Recognition System</h1></div>', unsafe_allow_html=True)
     st.markdown("### Choose between Speech2Text models", unsafe_allow_html=True)
 
@@ -402,6 +421,7 @@ def main():
 
         # Microphone recording with webrtc_streamer
         st.markdown("### Record Audio", unsafe_allow_html=True)
+        st.info("Click 'Start' to begin recording and 'Stop' to finish. Ensure your microphone is enabled.")
         recorded_audio_en_hi = handle_webrtc_audio("audio_en_hi")
         if recorded_audio_en_hi:
             st.session_state.recorded_audio = recorded_audio_en_hi
@@ -426,12 +446,15 @@ def main():
         if st.button("Transcribe with Speech2Text", key="transcribe_en_hi"):
             audio = st.session_state.recorded_audio if st.session_state.recorded_audio else uploaded_file_en_hi
             if audio:
+                logger.info("Starting transcription for English/Hindi")
                 transcription, duration, proc_time = transcribe_english_hindi(audio, language_selection)
                 st.session_state.transcription_en_hi = transcription
                 st.session_state.transcription_duration_en_hi = duration
                 st.session_state.transcription_proc_time_en_hi = proc_time
-                st.session_state.recorded_audio = None
+                st.session_state.recorded_audio = None  # Clear after transcription
+                logger.info("Transcription completed")
             else:
+                logger.warning("No audio input provided for English/Hindi")
                 st.error("No audio input provided. Please record or upload an audio file.")
         
         st.text_area("Transcription", st.session_state.transcription_en_hi, height=150, disabled=True, key="transcription_en_hi")
@@ -454,6 +477,7 @@ def main():
 
         # Microphone recording with webrtc_streamer
         st.markdown("### Record Audio", unsafe_allow_html=True)
+        st.info("Click 'Start' to begin recording and 'Stop' to finish. Ensure your microphone is enabled.")
         recorded_audio_hi = handle_webrtc_audio("audio_hi")
         if recorded_audio_hi:
             st.session_state.recorded_audio = recorded_audio_hi
@@ -478,12 +502,15 @@ def main():
         if st.button("Transcribe with Speech2Text", key="transcribe_hi"):
             audio = st.session_state.recorded_audio if st.session_state.recorded_audio else uploaded_file_hi
             if audio:
+                logger.info("Starting transcription for Hindi-only")
                 transcription, duration, proc_time = transcribe_hindi_only(audio)
                 st.session_state.transcription_hi = transcription
                 st.session_state.transcription_duration_hi = duration
                 st.session_state.transcription_proc_time_hi = proc_time
-                st.session_state.recorded_audio = None
+                st.session_state.recorded_audio = None  # Clear after transcription
+                logger.info("Transcription completed")
             else:
+                logger.warning("No audio input provided for Hindi-only")
                 st.error("No audio input provided. Please record or upload an audio file.")
         
         st.text_area("Transcription", st.session_state.transcription_hi, height=150, disabled=True, key="transcription_hi")
