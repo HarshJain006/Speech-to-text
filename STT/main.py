@@ -5,7 +5,12 @@ import torch
 from transformers import pipeline
 import librosa
 import soundfile as sf
-import sounddevice as sd
+try:
+    import sounddevice as sd
+    SOUNDDEVICE_AVAILABLE = True
+except Exception:
+    SOUNDDEVICE_AVAILABLE = False
+from streamlit_mic_recorder import mic_recorder
 import io
 import uuid
 import re
@@ -115,6 +120,8 @@ if 'english_hindi_transcriber' not in st.session_state:
 
 # Microphone device functions
 def list_input_devices():
+    if not SOUNDDEVICE_AVAILABLE:
+        return []
     try:
         devices = sd.query_devices()
         input_devices = []
@@ -122,10 +129,12 @@ def list_input_devices():
             if dev['max_input_channels'] > 0:
                 input_devices.append((i, dev['name']))
         return input_devices
-    except Exception as e:
+    except Exception:
         return []
 
 def test_device(device_index, duration=1, fs=44100):
+    if not SOUNDDEVICE_AVAILABLE:
+        return False
     try:
         sd.default.device = (device_index, None)
         recording = sd.rec(int(duration * fs), samplerate=fs, channels=1)
@@ -184,23 +193,20 @@ def process_audio(audio, sr=16000):
     if audio is None:
         return None, "0.0 seconds", "No audio detected"
     try:
-        if isinstance(audio, tuple):  # From mic recording (sounddevice)
+        if isinstance(audio, tuple):  # From mic recording (sounddevice or streamlit-mic-recorder)
             input_sr, y = audio
             if len(y) == 0:
                 return None, "0.0 seconds", "Empty audio data from microphone"
             y = y.astype(np.float32)
             if len(y.shape) == 2:
                 y = np.mean(y, axis=1)
-            # Resample if necessary
             if input_sr != sr:
                 y = librosa.resample(y, orig_sr=input_sr, target_sr=sr)
         else:  # From file upload
-            # Validate file extension
             if hasattr(audio, 'name'):
                 ext = os.path.splitext(audio.name)[1].lower()
                 if ext not in ['.wav', '.mp3']:
                     return None, "0.0 seconds", f"Unsupported file format: {ext}. Please upload WAV or MP3."
-            # Save uploaded file temporarily
             temp_file = f"temp_audio_{uuid.uuid4()}{ext if hasattr(audio, 'name') else '.wav'}"
             with open(temp_file, "wb") as f:
                 f.write(audio.read())
@@ -296,7 +302,7 @@ def main():
     st.markdown("### Choose between Speech2Text models", unsafe_allow_html=True)
 
     # Scan microphone devices
-    if not st.session_state.working_devices:
+    if SOUNDDEVICE_AVAILABLE and not st.session_state.working_devices:
         devices = list_input_devices()
         for idx, name in devices:
             if test_device(idx):
@@ -337,9 +343,7 @@ def main():
 
         # Microphone recording
         st.markdown("### Record Audio", unsafe_allow_html=True)
-        if not st.session_state.working_devices:
-            st.error("No working microphones found! Please upload an audio file instead.")
-        else:
+        if SOUNDDEVICE_AVAILABLE and st.session_state.working_devices:
             device_names = [name for idx, name in st.session_state.working_devices]
             chosen_name = st.selectbox("Choose microphone input device", device_names, key="mic_select_en_hi")
             chosen_idx = None
@@ -373,6 +377,11 @@ def main():
                         os.remove(tmpfile.name)
                 except Exception as e:
                     st.error(f"Error recording audio: {str(e)}")
+        else:
+            st.warning("No working microphones detected with sounddevice. Using browser-based recording.")
+            audio_input = mic_recorder(start_prompt="🎙️ Record", stop_prompt="⏹️ Stop", key=f"mic_en_hi_{uuid.uuid4()}")
+            if audio_input:
+                st.session_state.recorded_audio = (audio_input['sample_rate'], audio_input['samples'])
 
         uploaded_file_en_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_en_hi")
         
@@ -406,9 +415,7 @@ def main():
 
         # Microphone recording
         st.markdown("### Record Audio", unsafe_allow_html=True)
-        if not st.session_state.working_devices:
-            st.error("No working microphones found! Please upload an audio file instead.")
-        else:
+        if SOUNDDEVICE_AVAILABLE and st.session_state.working_devices:
             device_names = [name for idx, name in st.session_state.working_devices]
             chosen_name = st.selectbox("Choose microphone input device", device_names, key="mic_select_hi")
             chosen_idx = None
@@ -442,6 +449,11 @@ def main():
                         os.remove(tmpfile.name)
                 except Exception as e:
                     st.error(f"Error recording audio: {str(e)}")
+        else:
+            st.warning("No working microphones detected with sounddevice. Using browser-based recording.")
+            audio_input = mic_recorder(start_prompt="🎙️ Record", stop_prompt="⏹️ Stop", key=f"mic_hi_{uuid.uuid4()}")
+            if audio_input:
+                st.session_state.recorded_audio = (audio_input['sample_rate'], audio_input['samples'])
 
         uploaded_file_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_hi")
         
