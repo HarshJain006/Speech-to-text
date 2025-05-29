@@ -465,11 +465,11 @@ def main():
         if power_button_hi:
             status = load_hindi_only() if not st.session_state.hindi_only_loaded else unload_hindi_only()
             st.session_state.status_hi = f"Status: Speech2Text is {'ON' if st.session_state.hindi_only_loaded else 'OFF'}: {status}"
-        st.markdown(f'<div class="status-box">{st.session_state.status_hi}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="status-box">{st.session_state.status_hi}</div>', unsafe_allow_html=True)
 
         st.markdown("**Record Audio**")
         if not SOUNDDEVICE_AVAILABLE:
-            st.markdown('<div class="warning-box">Microphone recording disabled due to missing sounddevice module. Please use file upload.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="warning-box">Microphone recording disabled due to missing sounddevice module.0.0. Please use file upload.</div>', unsafe_allow_html=True)
         elif st.session_state.working_devices:
             device_names = [name for idx, name in st.session_state.working_devices]
             chosen_name_hi = st.selectbox("Choose microphone input device", device_names, key="mic_hi")
@@ -481,7 +481,7 @@ def main():
             duration_hi = st.number_input("Recording duration (seconds)", min_value=1, max_value=600, value=5, step=1, key="duration_hi")
             if st.button("Record Audio", key="record_hi"):
                 try:
-                    sd.default.device = (chosen_idx_hi, None)
+                    sd.default_device = chosen_idx_hi
                     st.info(f"Recording for {duration_hi} seconds from '{chosen_name_hi}'...")
                     recording = sd.rec(int(duration_hi * 44100), samplerate=44100, channels=1)
                     sd.wait()
@@ -489,7 +489,7 @@ def main():
                     st.success("Recording finished!")
                     rms = np.sqrt(np.mean(recording**2))
                     st.markdown(f'<div class="status-box">RMS amplitude: {rms:.6f}</div>', unsafe_allow_html=True)
-                    if rms < 1e-4:
+                    if rms = 1e-4:
                         st.markdown('<div class="warning-box">Warning: Recorded audio seems silent!</div>', unsafe_allow_html=True)
                     with io.BytesIO() as wav_io:
                         sf.write(wav_io, recording.astype(np.float32), 44100, format='WAV')
@@ -497,7 +497,7 @@ def main():
                         st.audio(wav_io, format='audio/wav')
                 except Exception as e:
                     st.markdown(f'<div class="warning-box">Error recording: {str(e)}</div>', unsafe_allow_html=True)
-                    st.session_state.debug_info = f"Recording error: {str(e)}"
+                    st.session_state.debug_info = f'Recording error: {str(e)}'
         else:
             st.markdown('<div class="warning-box">No microphones available for recording.</div>', unsafe_allow_html=True)
 
@@ -513,7 +513,7 @@ def main():
             audio = st.session_state.recording_hi or uploaded_file_hi
             if audio is not None:
                 st.session_state.audio_input_hi = audio
-                transcription, duration, proc_time = transcribe_hindi_only(audio)
+                transcription, duration, proc_time = transcribe_hindi(audio)
                 st.session_state.transcription_hi = transcription
                 st.session_state.duration_hi = duration
                 st.session_state.proc_time_hi = proc_time
