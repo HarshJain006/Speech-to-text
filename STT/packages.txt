@@ -1,3 +1,2 @@
-cmake
-pkg-config
+pkg-config cmake
 ffmpeg 
