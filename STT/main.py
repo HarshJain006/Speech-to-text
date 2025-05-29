@@ -5,17 +5,12 @@ import torch
 from transformers import pipeline
 import librosa
 import soundfile as sf
-try:
-    import sounddevice as sd
-    SOUNDDEVICE_AVAILABLE = True
-except Exception:
-    SOUNDDEVICE_AVAILABLE = False
 from streamlit_mic_recorder import mic_recorder
 import io
 import uuid
 import re
 import os
-import tempfile
+import json
 
 # Custom CSS for styling
 st.markdown("""
@@ -101,6 +96,37 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# JavaScript to enumerate audio devices
+JS_CODE = """
+<script>
+async function getAudioDevices() {
+    try {
+        // Request microphone permission
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Enumerate devices
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const audioDevices = devices
+            .filter(device => device.kind === 'audioinput')
+            .map(device => ({ id: device.deviceId, label: device.label || 'Microphone ' + (devices.indexOf(device) + 1) }));
+        // Stop stream to release microphone
+        stream.getTracks().forEach(track => track.stop());
+        // Send devices to Streamlit
+        window.parent.postMessage({
+            type: 'audio_devices',
+            devices: audioDevices
+        }, '*');
+        return audioDevices;
+    } catch (err) {
+        window.parent.postMessage({
+            type: 'audio_devices_error',
+            error: err.message
+        }, '*');
+        return [];
+    }
+}
+</script>
+"""
+
 # Initialize session state
 if 'english_hindi_transcriber' not in st.session_state:
     st.session_state.english_hindi_transcriber = None
@@ -115,35 +141,9 @@ if 'english_hindi_transcriber' not in st.session_state:
     st.session_state.proc_time_hi = "0.0 seconds"
     st.session_state.status_en_hi = "Speech2Text is OFF"
     st.session_state.status_hi = "Speech2Text is OFF"
-    st.session_state.working_devices = []
+    st.session_state.audio_devices = []
     st.session_state.recorded_audio = None
-
-# Microphone device functions
-def list_input_devices():
-    if not SOUNDDEVICE_AVAILABLE:
-        return []
-    try:
-        devices = sd.query_devices()
-        input_devices = []
-        for i, dev in enumerate(devices):
-            if dev['max_input_channels'] > 0:
-                input_devices.append((i, dev['name']))
-        return input_devices
-    except Exception:
-        return []
-
-def test_device(device_index, duration=1, fs=44100):
-    if not SOUNDDEVICE_AVAILABLE:
-        return False
-    try:
-        sd.default.device = (device_index, None)
-        recording = sd.rec(int(duration * fs), samplerate=fs, channels=1)
-        sd.wait()
-        if np.any(np.abs(recording) > 0.001):
-            return True
-        return False
-    except Exception:
-        return False
+    st.session_state.device_error = None
 
 # Model loading/unloading functions
 def load_english_hindi(model_size="tiny"):
@@ -193,7 +193,7 @@ def process_audio(audio, sr=16000):
     if audio is None:
         return None, "0.0 seconds", "No audio detected"
     try:
-        if isinstance(audio, tuple):  # From mic recording (sounddevice or streamlit-mic-recorder)
+        if isinstance(audio, tuple):  # From mic_recorder
             input_sr, y = audio
             if len(y) == 0:
                 return None, "0.0 seconds", "Empty audio data from microphone"
@@ -301,12 +301,13 @@ def main():
     st.markdown('<div class="header"><h1>Speech Recognition System</h1></div>', unsafe_allow_html=True)
     st.markdown("### Choose between Speech2Text models", unsafe_allow_html=True)
 
-    # Scan microphone devices
-    if SOUNDDEVICE_AVAILABLE and not st.session_state.working_devices:
-        devices = list_input_devices()
-        for idx, name in devices:
-            if test_device(idx):
-                st.session_state.working_devices.append((idx, name))
+    # Handle JavaScript messages
+    if 'js_message' in st.session_state:
+        message = st.session_state.js_message
+        if message.get('type') == 'audio_devices':
+            st.session_state.audio_devices = message.get('devices', [])
+        elif message.get('type') == 'audio_devices_error':
+            st.session_state.device_error = message.get('error', 'Unknown error')
 
     # Tabs
     tab1, tab2 = st.tabs(["Speech2Text (English & Hindi)", "Speech2Text (Hindi Only)"])
@@ -343,45 +344,56 @@ def main():
 
         # Microphone recording
         st.markdown("### Record Audio", unsafe_allow_html=True)
-        if SOUNDDEVICE_AVAILABLE and st.session_state.working_devices:
-            device_names = [name for idx, name in st.session_state.working_devices]
-            chosen_name = st.selectbox("Choose microphone input device", device_names, key="mic_select_en_hi")
-            chosen_idx = None
-            for idx, name in st.session_state.working_devices:
-                if name == chosen_name:
-                    chosen_idx = idx
-                    break
-            duration = st.number_input(
-                "Recording duration (seconds)",
-                min_value=1,
-                max_value=600,
-                value=5,
-                step=1,
-                key="duration_en_hi"
-            )
-            if st.button("Record Audio", key=f"record_en_hi_{uuid.uuid4()}"):
-                try:
-                    sd.default.device = (chosen_idx, None)
-                    st.info(f"Recording for {duration} seconds from '{chosen_name}'...")
-                    recording = sd.rec(int(duration * 44100), samplerate=44100, channels=1)
-                    sd.wait()
-                    st.success("Recording finished!")
-                    rms = np.sqrt(np.mean(recording**2))
-                    st.write(f"Recorded audio RMS amplitude: {rms:.6f}")
-                    if rms < 1e-4:
-                        st.warning("Warning: Recorded audio seems silent!")
-                    st.session_state.recorded_audio = (44100, recording)
-                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
-                        sf.write(tmpfile.name, recording.astype(np.float32), 44100)
-                        st.audio(tmpfile.name)
-                        os.remove(tmpfile.name)
-                except Exception as e:
-                    st.error(f"Error recording audio: {str(e)}")
+        if st.button("Scan Devices and Record", key=f"scan_record_en_hi_{uuid.uuid4()}"):
+            # Inject JavaScript to get devices
+            st.components.v1.html(f"""
+                {JS_CODE}
+                <button onclick="getAudioDevices()">Get Devices</button>
+                <script>
+                    window.addEventListener('message', (event) => {{
+                        if (event.data.type === 'audio_devices' || event.data.type === 'audio_devices_error') {{
+                            fetch('/_stcore/stream', {{
+                                method: 'POST',
+                                headers: {{ 'Content-Type': 'application/json' }},
+                                body: JSON.stringify({{
+                                    type: 'set_session_state',
+                                    key: 'js_message',
+                                    value: event.data
+                                }})
+                            }});
+                        }}
+                    }});
+                    getAudioDevices();
+                </script>
+            """, height=0)
+        
+        if st.session_state.device_error:
+            st.error(f"Error accessing microphone: {st.session_state.device_error}")
+        elif not st.session_state.audio_devices:
+            st.info("Click 'Scan Devices and Record' to request microphone permission and list available devices.")
         else:
-            st.warning("No working microphones detected with sounddevice. Using browser-based recording.")
-            audio_input = mic_recorder(start_prompt="🎙️ Record", stop_prompt="⏹️ Stop", key=f"mic_en_hi_{uuid.uuid4()}")
+            device_labels = [device['label'] for device in st.session_state.audio_devices]
+            selected_device = st.selectbox("Select Microphone", device_labels, key="mic_select_en_hi")
+            selected_device_id = next(device['id'] for device in st.session_state.audio_devices if device['label'] == selected_device)
+            
+            # Configure mic_recorder with selected device
+            audio_input = mic_recorder(
+                start_prompt="🎙️ Record",
+                stop_prompt="⏹️ Stop",
+                key=f"mic_en_hi_{uuid.uuid4()}",
+                device=selected_device_id
+            )
             if audio_input:
                 st.session_state.recorded_audio = (audio_input['sample_rate'], audio_input['samples'])
+                rms = np.sqrt(np.mean(audio_input['samples']**2))
+                st.write(f"Recorded audio RMS amplitude: {rms:.6f}")
+                if rms < 1e-4:
+                    st.warning("Warning: Recorded audio seems silent!")
+                # Save to temporary file for playback
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
+                    sf.write(tmpfile.name, audio_input['samples'].astype(np.float32), audio_input['sample_rate'])
+                    st.audio(tmpfile.name)
+                    os.remove(tmpfile.name)
 
         uploaded_file_en_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_en_hi")
         
@@ -415,45 +427,53 @@ def main():
 
         # Microphone recording
         st.markdown("### Record Audio", unsafe_allow_html=True)
-        if SOUNDDEVICE_AVAILABLE and st.session_state.working_devices:
-            device_names = [name for idx, name in st.session_state.working_devices]
-            chosen_name = st.selectbox("Choose microphone input device", device_names, key="mic_select_hi")
-            chosen_idx = None
-            for idx, name in st.session_state.working_devices:
-                if name == chosen_name:
-                    chosen_idx = idx
-                    break
-            duration = st.number_input(
-                "Recording duration (seconds)",
-                min_value=1,
-                max_value=600,
-                value=5,
-                step=1,
-                key="duration_hi"
-            )
-            if st.button("Record Audio", key=f"record_hi_{uuid.uuid4()}"):
-                try:
-                    sd.default.device = (chosen_idx, None)
-                    st.info(f"Recording for {duration} seconds from '{chosen_name}'...")
-                    recording = sd.rec(int(duration * 44100), samplerate=44100, channels=1)
-                    sd.wait()
-                    st.success("Recording finished!")
-                    rms = np.sqrt(np.mean(recording**2))
-                    st.write(f"Recorded audio RMS amplitude: {rms:.6f}")
-                    if rms < 1e-4:
-                        st.warning("Warning: Recorded audio seems silent!")
-                    st.session_state.recorded_audio = (44100, recording)
-                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
-                        sf.write(tmpfile.name, recording.astype(np.float32), 44100)
-                        st.audio(tmpfile.name)
-                        os.remove(tmpfile.name)
-                except Exception as e:
-                    st.error(f"Error recording audio: {str(e)}")
+        if st.button("Scan Devices and Record", key=f"scan_record_hi_{uuid.uuid4()}"):
+            st.components.v1.html(f"""
+                {JS_CODE}
+                <button onclick="getAudioDevices()">Get Devices</button>
+                <script>
+                    window.addEventListener('message', (event) => {{
+                        if (event.data.type === 'audio_devices' || event.data.type === 'audio_devices_error') {{
+                            fetch('/_stcore/stream', {{
+                                method: 'POST',
+                                headers: {{ 'Content-Type': 'application/json' }},
+                                body: JSON.stringify({{
+                                    type: 'set_session_state',
+                                    key: 'js_message',
+                                    value: event.data
+                                }})
+                            }});
+                        }}
+                    }});
+                    getAudioDevices();
+                </script>
+            """, height=0)
+        
+        if st.session_state.device_error:
+            st.error(f"Error accessing microphone: {st.session_state.device_error}")
+        elif not st.session_state.audio_devices:
+            st.info("Click 'Scan Devices and Record' to request microphone permission and list available devices.")
         else:
-            st.warning("No working microphones detected with sounddevice. Using browser-based recording.")
-            audio_input = mic_recorder(start_prompt="🎙️ Record", stop_prompt="⏹️ Stop", key=f"mic_hi_{uuid.uuid4()}")
+            device_labels = [device['label'] for device in st.session_state.audio_devices]
+            selected_device = st.selectbox("Select Microphone", device_labels, key="mic_select_hi")
+            selected_device_id = next(device['id'] for device in st.session_state.audio_devices if device['label'] == selected_device)
+            
+            audio_input = mic_recorder(
+                start_prompt="🎙️ Record",
+                stop_prompt="⏹️ Stop",
+                key=f"mic_hi_{uuid.uuid4()}",
+                device=selected_device_id
+            )
             if audio_input:
                 st.session_state.recorded_audio = (audio_input['sample_rate'], audio_input['samples'])
+                rms = np.sqrt(np.mean(audio_input['samples']**2))
+                st.write(f"Recorded audio RMS amplitude: {rms:.6f}")
+                if rms < 1e-4:
+                    st.warning("Warning: Recorded audio seems silent!")
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
+                    sf.write(tmpfile.name, audio_input['samples'].astype(np.float32), audio_input['sample_rate'])
+                    st.audio(tmpfile.name)
+                    os.remove(tmpfile.name)
 
         uploaded_file_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_hi")
         
