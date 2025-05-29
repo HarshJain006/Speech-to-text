@@ -230,7 +230,7 @@ def transcribe_hindi_only(audio):
             raw_text = result.get("text", "").strip()
             # Split transcription into segments using punctuation (lightweight)
             segments = re.split(r'[।,.!?]\s*', raw_text)
-            transcription = "\n".join([segment.strip() for segment in segments if segment])
+            transcription = "\n".join([segment.strip() for segment in segments if segment.strip()])
             processing_time = time.time() - start_time
             processing_time_str = f"{processing_time:.2f} seconds"
         return transcription, audio_duration_str, processing_time_str
@@ -244,10 +244,10 @@ def transcribe_hindi_only(audio):
 # Main app
 def main():
     st.markdown('<div class="header"><h1>Speech Recognition System</h1></div>', unsafe_allow_html=True)
-    st.markdown("### Choose between SpeechTranscript models", unsafe_allow_html=True)
+    st.markdown("### Choose between Speech2Text models", unsafe_allow_html=True)
 
     # Tabs
-    tab1, tab2 = st.tabs(["SpeechToText (English & Hindi)", "SpeechToText (Hindi Only)"])
+    tab1, tab2 = st.tabs(["Speech2Text (English & Hindi)", "Speech2Text (Hindi Only)"])
 
     with tab1:
         col1, col2 = st.columns(2)
@@ -255,21 +255,20 @@ def main():
             # Display all models but make "large-v2" non-selectable
             all_models = ["tiny", "base", "small", "medium", "large-v2"]
             selectable_models = [m for m in all_models if m != "large-v2"]
-            model_select = st.selectbox(
+            model_size = st.selectbox(
                 "Model Size",
                 selectable_models,
                 index=0,  # Default to "tiny" for sustainability
                 format_func=lambda x: f"{x} (disabled)" if x == "large-v2" else x,
                 help="Tiny or small recommended for Indian accents. Large-v2 is disabled due to resource constraints.",
-                key="model_size_select"
+                key="model_size_en_hi"
             )
             power_button_en_hi = st.button(
-                "Turn ON Speech",
-                key="en_hi_power" if not st.session_state.english_hindi_loaded else "Turn OFF Speech",
-                key="power_button"
+                "Turn ON Speech2Text" if not st.session_state.english_hindi_loaded else "Turn OFF Speech2Text",
+                key="power_button_en_hi"
             )
             if power_button_en_hi:
-                status = load_english_hindi(model_select) if not st.session_state.english_hindi_loaded.load else unload_english_hindi()
+                status = load_english_hindi(model_size) if not st.session_state.english_hindi_loaded else unload_english_hindi()
                 st.session_state.status_en_hi = f"Speech2Text is {'ON' if st.session_state.english_hindi_loaded else 'OFF'}: {status}"
             st.markdown(f'<div class="status-box">{st.session_state.status_en_hi}</div>', unsafe_allow_html=True)
         with col2:
@@ -278,7 +277,7 @@ def main():
                 ["english", "hindi"],
                 index=0,
                 help="Select language for transcription",
-                key="language_selection"
+                key="language_selection_en_hi"
             )
 
         audio_input_en_hi = mic_recorder(start_prompt="🎙️ Record", stop_prompt="⏹️ Stop", key=f"mic_en_hi_{uuid.uuid4()}")
