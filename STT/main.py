@@ -92,6 +92,14 @@ st.markdown("""
             font-size: 14px;
             font-style: italic;
         }
+        .warning-box {
+            background-color: #FFF3CD;
+            color: #856404;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid #FFEEBA;
+            margin: 10px 0;
+        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -160,11 +168,22 @@ def process_audio(audio, sr=16000):
     try:
         if isinstance(audio, tuple):  # From mic_recorder
             input_sr, y = audio
-            if len(y) == 0:
+            # Debug microphone input
+            if y is None or len(y) == 0:
                 return None, "0.0 seconds", "Empty audio data from microphone"
+            if not isinstance(y, np.ndarray):
+                return None, "0.0 seconds", f"Invalid microphone data type: {type(y)}"
+            if input_sr <= 0:
+                return None, "0.0 seconds", f"Invalid sample rate: {input_sr}"
+            # Log debug info
+            debug_info = f"Microphone input: shape={y.shape}, dtype={y.dtype}, sample_rate={input_sr}, max_amplitude={np.max(np.abs(y)) if len(y) > 0 else 0}"
+            st.session_state.debug_info = debug_info
             y = y.astype(np.float32)
             if len(y.shape) == 2:
                 y = np.mean(y, axis=1)
+            # Check for silent audio
+            if np.max(np.abs(y)) < 1e-6:
+                return None, "0.0 seconds", "Microphone audio is silent (no detectable sound)"
             # Resample if necessary
             if input_sr != sr:
                 y = librosa.resample(y, orig_sr=input_sr, target_sr=sr)
@@ -227,6 +246,8 @@ def transcribe_english_hindi(audio, language):
                 transcription = "\n".join([chunk["text"].strip() for chunk in result["chunks"] if chunk["text"].strip()])
             else:
                 transcription = result.get("text", "").strip()  # Fallback if no chunks
+            if not transcription:
+                transcription = "Warning: No transcription generated. Audio may be too short, silent, or unclear."
             processing_time = time.time() - start_time
             processing_time_str = f"{processing_time:.2f} seconds"
         return transcription, audio_duration_str, processing_time_str
@@ -258,6 +279,8 @@ def transcribe_hindi_only(audio):
             # Split transcription into segments using punctuation (lightweight)
             segments = re.split(r'[।,.!?]\s*', raw_text)
             transcription = "\n".join([segment.strip() for segment in segments if segment.strip()])
+            if not transcription:
+                transcription = "Warning: No transcription generated. Audio may be too short, silent, or unclear."
             processing_time = time.time() - start_time
             processing_time_str = f"{processing_time:.2f} seconds"
         return transcription, audio_duration_str, processing_time_str
@@ -317,6 +340,8 @@ def main():
                 st.session_state.transcription_en_hi = transcription
                 st.session_state.duration_en_hi = duration
                 st.session_state.proc_time_en_hi = proc_time
+            else:
+                st.markdown('<div class="warning-box">No audio input provided. Please record or upload an audio file.</div>', unsafe_allow_html=True)
         
         st.text_area("Transcription", st.session_state.transcription_en_hi, height=150, disabled=True, key="transcription_en_hi")
         col3, col4 = st.columns(2)
@@ -324,6 +349,9 @@ def main():
             st.text_input("Audio Duration", st.session_state.duration_en_hi, disabled=True, key="duration_en_hi")
         with col4:
             st.text_input("Processing Time", st.session_state.proc_time_en_hi, disabled=True, key="proc_time_en_hi")
+        # Display debug info if available
+        if 'debug_info' in st.session_state and audio_input_en_hi:
+            st.markdown(f'<div class="status-box">Debug: {st.session_state.debug_info}</div>', unsafe_allow_html=True)
 
     with tab2:
         st.markdown("### This Speech2Text model is specialized for Hindi language only", unsafe_allow_html=True)
@@ -346,6 +374,8 @@ def main():
                 st.session_state.transcription_hi = transcription
                 st.session_state.duration_hi = duration
                 st.session_state.proc_time_hi = proc_time
+            else:
+                st.markdown('<div class="warning-box">No audio input provided. Please record or upload an audio file.</div>', unsafe_allow_html=True)
         
         st.text_area("Transcription", st.session_state.transcription_hi, height=150, disabled=True, key="transcription_hi")
         col5, col6 = st.columns(2)
@@ -353,6 +383,9 @@ def main():
             st.text_input("Audio Duration", st.session_state.duration_hi, disabled=True, key="duration_hi")
         with col6:
             st.text_input("Processing Time", st.session_state.proc_time_hi, disabled=True, key="proc_time_hi")
+        # Display debug info if available
+        if 'debug_info' in st.session_state and audio_input_hi:
+            st.markdown(f'<div class="status-box">Debug: {st.session_state.debug_info}</div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
