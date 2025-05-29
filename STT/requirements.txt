@@ -1,12 +1,9 @@
 # Core dependencies for the speech recognition Streamlit app
 streamlit==1.38.0
-numpy==1.26.4
-torch==2.3.0
-transformers==4.41.2
-librosa==0.10.2
+numpy==2.1.2
+torch==2.5.0
+transformers==4.46.0
+librosa==0.10.3
 soundfile==0.12.1
-sounddevice==0.4.7
+sounddevice==0.5.1
 sentencepiece==0.2.0
-
-# Optional: Ensure compatibility with Windows audio backend
-pyaudio==0.2.14; sys_platform == 'win32'
