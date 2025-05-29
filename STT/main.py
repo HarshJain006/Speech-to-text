@@ -1,5 +1,4 @@
 import streamlit as st
-import sounddevice as sd
 import numpy as np
 import time
 import torch
@@ -11,6 +10,14 @@ import re
 import os
 import warnings
 from transformers import pipeline
+
+# Try importing sounddevice
+try:
+    import sounddevice as sd
+    SOUNDDEVICE_AVAILABLE = True
+except ImportError:
+    SOUNDDEVICE_AVAILABLE = False
+    st.session_state.debug_info = "sounddevice module not found. Microphone recording disabled."
 
 # Suppress benign PyTorch warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="torch")
@@ -104,6 +111,8 @@ st.markdown("""
 
 # Audio device management
 def list_input_devices():
+    if not SOUNDDEVICE_AVAILABLE:
+        return []
     try:
         devices = sd.query_devices()
         input_devices = []
@@ -116,6 +125,8 @@ def list_input_devices():
         return []
 
 def test_device(device_index, duration=1, fs=44100):
+    if not SOUNDDEVICE_AVAILABLE:
+        return False
     try:
         sd.default.device = (device_index, None)
         recording = sd.rec(int(duration * fs), samplerate=fs, channels=1)
@@ -213,7 +224,7 @@ def process_audio(audio, sr=16000):
                 return None, "0.0 seconds", "Microphone audio too quiet"
             if input_sr != sr:
                 y = librosa.resample(y, orig_sr=input_sr, target_sr=sr)
-        elif isinstance(audio, bytes):  # From previous audio_recorder compatibility
+        elif isinstance(audio, bytes):  # For compatibility
             with io.BytesIO(audio) as wav_io:
                 y, input_sr = sf.read(wav_io)
             if y is None or len(y) == 0:
@@ -340,7 +351,7 @@ def main():
     st.markdown("**Note**: Ensure microphone is connected and working. Use Chrome/Firefox for best compatibility.", unsafe_allow_html=True)
 
     # Scan working devices
-    if not st.session_state.working_devices:
+    if not st.session_state.working_devices and SOUNDDEVICE_AVAILABLE:
         devices = list_input_devices()
         for idx, name in devices:
             if test_device(idx):
@@ -381,7 +392,9 @@ def main():
             )
 
         st.markdown("**Record Audio**")
-        if st.session_state.working_devices:
+        if not SOUNDDEVICE_AVAILABLE:
+            st.markdown('<div class="warning-box">Microphone recording disabled due to missing sounddevice module. Please use file upload.</div>', unsafe_allow_html=True)
+        elif st.session_state.working_devices:
             device_names = [name for idx, name in st.session_state.working_devices]
             chosen_name_en_hi = st.selectbox("Choose microphone input device", device_names, key="mic_en_hi")
             chosen_idx_en_hi = None
@@ -402,7 +415,6 @@ def main():
                     st.markdown(f'<div class="status-box">RMS amplitude: {rms:.6f}</div>', unsafe_allow_html=True)
                     if rms < 1e-4:
                         st.markdown('<div class="warning-box">Warning: Recorded audio seems silent!</div>', unsafe_allow_html=True)
-                    # Save to BytesIO for playback
                     with io.BytesIO() as wav_io:
                         sf.write(wav_io, recording.astype(np.float32), 44100, format='WAV')
                         wav_io.seek(0)
@@ -456,7 +468,9 @@ def main():
         st.markdown(f'<div class="status-box">{st.session_state.status_hi}</div>', unsafe_allow_html=True)
 
         st.markdown("**Record Audio**")
-        if st.session_state.working_devices:
+        if not SOUNDDEVICE_AVAILABLE:
+            st.markdown('<div class="warning-box">Microphone recording disabled due to missing sounddevice module. Please use file upload.</div>', unsafe_allow_html=True)
+        elif st.session_state.working_devices:
             device_names = [name for idx, name in st.session_state.working_devices]
             chosen_name_hi = st.selectbox("Choose microphone input device", device_names, key="mic_hi")
             chosen_idx_hi = None
