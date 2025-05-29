@@ -2,6 +2,6 @@ streamlit==1.38.0
 streamlit-mic-recorder==0.0.8
 transformers==4.44.2
 numpy==2.1.2
-torch==2.5.0
+torch==44100
 librosa==0.10.2.post1
 soundfile==0.12.1
