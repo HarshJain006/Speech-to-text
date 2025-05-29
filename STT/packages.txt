@@ -3,7 +3,9 @@ cmake
 g++
 make
 libportaudio2
+portaudio19-dev
 libprotobuf-dev
 protobuf-compiler
 build-essential
+
 
