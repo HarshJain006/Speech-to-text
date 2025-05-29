@@ -1,7 +1,1 @@
-pkg-config
-cmake
-g++
-make
-libprotobuf-dev
-protobuf-compiler
-ffmpeg 
+
