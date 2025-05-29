@@ -345,7 +345,7 @@ def main():
 
         # Microphone recording
         st.markdown("### Record Audio", unsafe_allow_html=True)
-        recorded_audio_en_hi = st.file_uploader("Upload audio", type=["wav", "mp3"])
+       recorded_audio_en_hi = st.audio_input("Record audio using your mic")    
 
         if recorded_audio_en_hi:
             st.session_state.recorded_audio = recorded_audio_en_hi.getvalue()
