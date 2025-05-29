@@ -10,7 +10,9 @@ import uuid
 import re
 import os
 import logging
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, ClientSettings
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, ClientSettings, AudioReceiver
+import queue
+import av
 
 # Set up logging for debugging
 logging.basicConfig(level=logging.DEBUG)
@@ -185,7 +187,7 @@ def process_audio(audio, sr=16000):
     if audio is None:
         return None, "0.0 seconds", "No audio detected"
     try:
-        if isinstance(audio, bytes):  # From webrtc_streamer or st.audio_input
+        if isinstance(audio, bytes):  # From webrtc_streamer
             # Write bytes to temporary WAV file
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
                 tmpfile.write(audio)
@@ -308,6 +310,16 @@ def transcribe_hindi_only(audio):
 
 # Function to handle WebRTC audio
 def handle_webrtc_audio(key):
+    audio_queue = queue.Queue()
+
+    def process_audio_frame(frame: av.AudioFrame) -> av.AudioFrame:
+        try:
+            audio_data = frame.to_ndarray().flatten()
+            audio_queue.put(audio_data)
+        except Exception as e:
+            logger.error(f"Error processing audio frame: {str(e)}")
+        return frame
+
     ctx = webrtc_streamer(
         key=key,
         mode=WebRtcMode.SENDONLY,
@@ -315,16 +327,23 @@ def handle_webrtc_audio(key):
         video=False,
         client_settings=ClientSettings(
             media_stream_constraints={"audio": True, "video": False}
-        )
+        ),
+        audio_frame_callback=process_audio_frame
     )
-    if ctx.audio_receiver:
+
+    if ctx.state.playing:
         try:
             audio_frames = []
-            while ctx.audio_receiver:
-                frame = ctx.audio_receiver.get_frame()
-                if frame is None:
-                    break
-                audio_frames.append(frame.to_ndarray())
+            # Collect frames for a short duration to avoid blocking
+            timeout = 10  # seconds
+            start_time = time.time()
+            while time.time() - start_time < timeout and ctx.state.playing:
+                try:
+                    audio_data = audio_queue.get(timeout=1)
+                    if audio_data is not None:
+                        audio_frames.append(audio_data)
+                except queue.Empty:
+                    continue
             if audio_frames:
                 audio_data = np.concatenate(audio_frames, axis=0)
                 # Convert to bytes for processing
@@ -334,9 +353,13 @@ def handle_webrtc_audio(key):
                         audio_bytes = f.read()
                     os.remove(tmpfile.name)
                 return audio_bytes
+            else:
+                st.warning("No audio data captured. Please try recording again.")
+                return None
         except Exception as e:
             logger.error(f"Error in WebRTC audio processing: {str(e)}")
             st.error(f"Error capturing audio: {str(e)}")
+            return None
     return None
 
 # Main app
