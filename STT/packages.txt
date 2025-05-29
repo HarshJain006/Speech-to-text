@@ -1,1 +1,1 @@
-ffmpeg libportaudio2
+ffmpeg 
