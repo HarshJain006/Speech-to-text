@@ -1,18 +1,8 @@
-# Core dependencies for the speech recognition Streamlit app
 streamlit==1.38.0
 numpy==2.1.2
 torch==2.5.0
 transformers==4.46.0
-librosa==0.10.1
+librosa==0.10.2
 soundfile==0.12.1
 sounddevice==0.5.1
 sentencepiece==0.2.0
-
-
-
-
-
-
-
-
-
