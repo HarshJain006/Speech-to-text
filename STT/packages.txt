@@ -2,6 +2,8 @@ pkg-config
 cmake
 g++
 make
+libportaudio2
 libprotobuf-dev
 protobuf-compiler
 build-essential
+
