@@ -1,5 +1,5 @@
 import streamlit as st
-from streamlit_mic_recorder import mic_recorder
+from st_audiorec import st_audiorec
 import numpy as np
 import time
 import torch
@@ -87,11 +87,6 @@ st.markdown("""
             margin: 10px 0;
             border: 1px solid #4169E1;
         }
-        .info-text {
-            color: #4169E1;
-            font-size: 14px;
-            font-style: italic;
-        }
         .warning-box {
             background-color: #FFF3CD;
             color: #856404;
@@ -117,6 +112,7 @@ if 'english_hindi_transcriber' not in st.session_state:
     st.session_state.proc_time_hi = "0.0 seconds"
     st.session_state.status_en_hi = "Speech2Text is OFF"
     st.session_state.status_hi = "Speech2Text is OFF"
+    st.session_state.debug_info = ""
 
 # Model loading/unloading functions
 def load_english_hindi(model_size="tiny"):
@@ -166,9 +162,10 @@ def process_audio(audio, sr=16000):
     if audio is None:
         return None, "0.0 seconds", "No audio detected"
     try:
-        if isinstance(audio, tuple):  # From mic_recorder
-            input_sr, y = audio
-            # Debug microphone input
+        if isinstance(audio, bytes):  # From st_audiorec (microphone)
+            # Read WAV bytes using soundfile
+            with io.BytesIO(audio) as wav_io:
+                y, input_sr = sf.read(wav_io)
             if y is None or len(y) == 0:
                 return None, "0.0 seconds", "Empty audio data from microphone"
             if not isinstance(y, np.ndarray):
@@ -330,7 +327,8 @@ def main():
                 key="language_selection_en_hi"
             )
 
-        audio_input_en_hi = mic_recorder(start_prompt="🎙️ Record", stop_prompt="⏹️ Stop", key=f"mic_en_hi_{uuid.uuid4()}")
+        st.markdown("**Record Audio**")
+        audio_input_en_hi = st_audiorec()
         uploaded_file_en_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_en_hi")
         
         if st.button("Transcribe with Speech2Text", key="transcribe_en_hi"):
@@ -350,7 +348,7 @@ def main():
         with col4:
             st.text_input("Processing Time", st.session_state.proc_time_en_hi, disabled=True, key="proc_time_en_hi")
         # Display debug info if available
-        if 'debug_info' in st.session_state and audio_input_en_hi:
+        if st.session_state.debug_info and audio_input_en_hi:
             st.markdown(f'<div class="status-box">Debug: {st.session_state.debug_info}</div>', unsafe_allow_html=True)
 
     with tab2:
@@ -364,7 +362,8 @@ def main():
             st.session_state.status_hi = f"Speech2Text is {'ON' if st.session_state.hindi_only_loaded else 'OFF'}: {status}"
         st.markdown(f'<div class="status-box">{st.session_state.status_hi}</div>', unsafe_allow_html=True)
 
-        audio_input_hi = mic_recorder(start_prompt="🎙️ Record", stop_prompt="⏹️ Stop", key=f"mic_hi_{uuid.uuid4()}")
+        st.markdown("**Record Audio**")
+        audio_input_hi = st_audiorec()
         uploaded_file_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_hi")
         
         if st.button("Transcribe with Speech2Text", key="transcribe_hi"):
@@ -384,7 +383,7 @@ def main():
         with col6:
             st.text_input("Processing Time", st.session_state.proc_time_hi, disabled=True, key="proc_time_hi")
         # Display debug info if available
-        if 'debug_info' in st.session_state and audio_input_hi:
+        if st.session_state.debug_info and audio_input_hi:
             st.markdown(f'<div class="status-box">Debug: {st.session_state.debug_info}</div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
