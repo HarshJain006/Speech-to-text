@@ -4,13 +4,16 @@ import streamlit.components.v1 as components
 import numpy as np
 import time
 import torch
-from transformers import pipeline
 import librosa
 import soundfile as sf
 import io
 import uuid
 import re
 import os
+import warnings
+
+# Suppress benign PyTorch warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="torch")
 
 # Custom CSS for styling and microphone feedback
 st.markdown("""
@@ -118,7 +121,6 @@ def audio_device_selector(key):
     <script>
         async function populateDevices() {{
             try {{
-                // Request microphone permission
                 await navigator.mediaDevices.getUserMedia({{ audio: true }});
                 const devices = await navigator.mediaDevices.enumerateDevices();
                 const select = document.getElementById("audioDevice_{0}");
@@ -130,7 +132,6 @@ def audio_device_selector(key):
                         select.appendChild(option);
                     }}
                 }});
-                // Send selected deviceId to Streamlit
                 select.addEventListener("change", () => {{
                     window.parent.postMessage({{
                         type: "streamlit:setComponentValue",
@@ -173,6 +174,7 @@ if 'english_hindi_transcriber' not in st.session_state:
 def load_english_hindi(model_size="tiny"):
     if not st.session_state.english_hindi_loaded:
         try:
+            from transformers import pipeline
             st.session_state.english_hindi_transcriber = pipeline(
                 "automatic-speech-recognition",
                 model=f"openai/whisper-{model_size}",
@@ -187,6 +189,7 @@ def load_english_hindi(model_size="tiny"):
 def load_hindi_only():
     if not st.session_state.hindi_only_loaded:
         try:
+            from transformers import pipeline
             st.session_state.hindi_only_transcriber = pipeline(
                 "automatic-speech-recognition",
                 model="AI4Bharat/indicwav2vec-hindi",
@@ -265,7 +268,7 @@ def process_audio(audio, sr=16000):
         debug_info = f"{st.session_state.debug_info}, audio processing time: {processing_time:.2f} seconds"
         st.session_state.debug_info = debug_info
         audio_duration_str = f"{audio_duration:.2f} seconds"
-        if np.max(y) > 0:
+        if np.max(np.abs(y)) > 0:
             y /= np.max(np.abs(y))  # Normalize
         return (sr, y), audio_duration_str, None
     except Exception as e:
@@ -314,7 +317,7 @@ def transcribe_english_hindi(audio, language, max_retries=3):
                     audio_duration_str,
                     "0.0 seconds"
                 )
-    return None, audio_duration_str, "0.0 seconds"
+    return "Transcription failed after retries", audio_duration_str, "0.0 seconds"
 
 def transcribe_hindi_only(audio, max_retries=3):
     if not st.session_state.hindi_only_loaded:
@@ -338,7 +341,7 @@ def transcribe_hindi_only(audio, max_retries=3):
                     {"sampling_rate": sr, "raw": y}
                 )
                 raw_text = result.get("text", "").strip()
-                segments = re.split(r'[।,.?!]\s*', raw_text)
+                segments = re.split(r'[।,.!?]\s*', raw_text)
                 transcription = "\n".join([segment.strip() for segment in segments if segment.strip()])
                 if not transcription:
                     transcription = "Warning: No transcription generated. Audio may be too short or unclear."
@@ -354,13 +357,13 @@ def transcribe_hindi_only(audio, max_retries=3):
                     audio_duration_str,
                     "0.0 seconds"
                 )
-    return None, audio_duration_str, "0.0 seconds"
+    return "Transcription failed after retries", audio_duration_str, "0.0 seconds"
 
 # Main app
 def main():
     st.markdown('<div class="header"><h1>Speech Recognition System</h1></div>', unsafe_allow_html=True)
     st.markdown("Select a Speech-to-Text model and record/upload audio.", unsafe_allow_html=True)
-    st.markdown("**Note**: Ensure microphone permissions are enabled in your browser (Chrome/Firefox recommended).", unsafe_allow_html=True)
+    st.markdown("**Note**: Use Chrome/Firefox and enable microphone permissions (padlock icon in URL bar).", unsafe_allow_html=True)
 
     # Tabs
     tab1, tab2 = st.tabs(["Speech2Text (English & Hindi)", "Speech2Text (Hindi Only)"])
@@ -409,7 +412,7 @@ def main():
         )
         if st.button("Retry Recording", key="retry_en_hi"):
             st.session_state.retry_count_en_hi = 0
-            st.experimental_rerun()
+            st.rerun()
         
         uploaded_file_en_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_en_hi")
         
@@ -445,13 +448,13 @@ def main():
             st.session_state.status_hi = f"Status: Speech2Text is {'ON' if st.session_state.hindi_only_loaded else 'OFF'}: {status}"
         st.markdown(f'<div class="status-box">{st.session_state.status_hi}</div>', unsafe_allow_html=True)
 
-        st.markdown("**Select Microphone (for debugging; default used)**")
+        st.markdown("**Select Microphone (for debugging; default mic used)**")
         device_id_hi = audio_device_selector("hi")
         if device_id_hi:
             st.session_state.device_hi = device_id_hi
             st.markdown(f'<div class="status-box">Selected device ID: {device_id_hi}</div>', unsafe_allow_html=True)
 
-        st.markdown("Record Audio")
+        st.markdown("**Record Audio**")
         audio_input_hi = audio_recorder(
             key="audio_hi",
             energy_threshold=100,
@@ -459,7 +462,7 @@ def main():
         )
         if st.button("Retry Recording", key="retry_hi"):
             st.session_state.retry_count_hi = 0
-            st.experimental_rerun()
+            st.rerun()
         
         uploaded_file_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_hi")
         
