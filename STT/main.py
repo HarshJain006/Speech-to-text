@@ -5,12 +5,16 @@ import torch
 from transformers import pipeline
 import librosa
 import soundfile as sf
-from streamlit_mic_recorder import mic_recorder
-import io
+import sounddevice as sd
+import tempfile
 import uuid
 import re
 import os
-import tempfile
+import logging
+
+# Set up logging for debugging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # Custom CSS for styling
 st.markdown("""
@@ -97,21 +101,55 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Initialize session state
-if 'english_hindi_transcriber' not in st.session_state:
+if not hasattr(st.session_state, 'initialized'):
+    st.session_state.initialized = True
     st.session_state.english_hindi_transcriber = None
     st.session_state.english_hindi_loaded = False
     st.session_state.hindi_only_transcriber = None
     st.session_state.hindi_only_loaded = False
     st.session_state.transcription_en_hi = ""
-    st.session_state.duration_en_hi = "0.0 seconds"
-    st.session_state.proc_time_en_hi = "0.0 seconds"
+    st.session_state.transcription_duration_en_hi = "0.0 seconds"
+    st.session_state.transcription_proc_time_en_hi = "0.0 seconds"
     st.session_state.transcription_hi = ""
-    st.session_state.duration_hi = "0.0 seconds"
-    st.session_state.proc_time_hi = "0.0 seconds"
+    st.session_state.transcription_duration_hi = "0.0 seconds"
+    st.session_state.transcription_proc_time_hi = "0.0 seconds"
     st.session_state.status_en_hi = "Speech2Text is OFF"
     st.session_state.status_hi = "Speech2Text is OFF"
+    st.session_state.working_devices = []
     st.session_state.recorded_audio = None
-    st.session_state.mic_error = None
+    st.session_state.device_error = None
+    st.session_state.recorded_audio_path = None
+
+# Device enumeration and testing functions
+def list_input_devices():
+    try:
+        logger.debug("Enumerating audio devices...")
+        devices = sd.query_devices()
+        input_devices = []
+        for i, dev in enumerate(devices):
+            if dev['max_input_channels'] > 0:
+                input_devices.append((i, dev['name']))
+        logger.debug(f"Found {len(input_devices)} input devices: {input_devices}")
+        return input_devices
+    except Exception as e:
+        logger.error(f"Error enumerating devices: {str(e)}")
+        return []
+
+def test_device(device_index, duration=1, fs=44100):
+    try:
+        logger.debug(f"Testing device index {device_index}")
+        sd.default.device = (device_index, None)
+        recording = sd.rec(int(duration * fs), samplerate=fs, channels=1)
+        sd.wait()
+        if np.any(np.abs(recording) > 0.001):
+            logger.debug(f"Device {device_index} is functional")
+            return True
+        else:
+            logger.debug(f"Device {device_index} recorded silence")
+            return False
+    except Exception as e:
+        logger.error(f"Error testing device {device_index}: {str(e)}")
+        return False
 
 # Model loading/unloading functions
 def load_english_hindi(model_size="tiny"):
@@ -131,14 +169,28 @@ def load_english_hindi(model_size="tiny"):
 def load_hindi_only():
     if not st.session_state.hindi_only_loaded:
         try:
-            st.session_state.hindi_only_transcriber = pipeline(
-                "automatic-speech-recognition",
-                model="AI4Bharat/indicwav2vec-hindi",
-                device="cuda" if torch.cuda.is_available() else "cpu"
-            )
-            st.session_state.hindi_only_loaded = True
-            return "Speech2Text (Hindi Only) loaded successfully"
+            with st.spinner("Loading Hindi-only Speech2Text model..."):
+                # Try loading AI4Bharat model first
+                try:
+                    st.session_state.hindi_only_transcriber = pipeline(
+                        "automatic-speech-recognition",
+                        model="AI4Bharat/indicwav2vec-hindi",
+                        device="cuda" if torch.cuda.is_available() else "cpu"
+                    )
+                    logger.info("Loaded AI4Bharat/indicwav2vec-hindi successfully")
+                except Exception as e:
+                    logger.warning(f"Failed to load AI4Bharat/indicwav2vec-hindi: {str(e)}. Falling back to facebook/mms-1b-all.")
+                    # Fallback to facebook/mms-1b-all with Hindi language
+                    st.session_state.hindi_only_transcriber = pipeline(
+                        "automatic-speech-recognition",
+                        model="facebook/mms-1b-all",
+                        device="cuda" if torch.cuda.is_available() else "cpu"
+                    )
+                    logger.info("Loaded facebook/mms-1b-all as fallback")
+                st.session_state.hindi_only_loaded = True
+                return "Speech2Text (Hindi Only) loaded successfully"
         except Exception as e:
+            logger.error(f"Error loading Hindi-only model: {str(e)}")
             return f"Error loading Speech2Text (Hindi Only): {str(e)}"
     return "Speech2Text (Hindi Only) already loaded"
 
@@ -161,7 +213,7 @@ def process_audio(audio, sr=16000):
     if audio is None:
         return None, "0.0 seconds", "No audio detected"
     try:
-        if isinstance(audio, tuple):  # From mic_recorder
+        if isinstance(audio, tuple):  # From sounddevice
             input_sr, y = audio
             if len(y) == 0:
                 return None, "0.0 seconds", "Empty audio data from microphone"
@@ -197,6 +249,7 @@ def process_audio(audio, sr=16000):
             y /= np.max(np.abs(y))  # Normalize
         return (sr, y), audio_duration_str, None
     except Exception as e:
+        logger.error(f"Error processing audio: {str(e)}")
         return None, "0.0 seconds", f"Error processing audio: {str(e)}"
 
 # Transcription functions
@@ -228,6 +281,7 @@ def transcribe_english_hindi(audio, language):
             processing_time_str = f"{processing_time:.2f} seconds"
         return transcription, audio_duration_str, processing_time_str
     except Exception as e:
+        logger.error(f"Error in English/Hindi transcription: {str(e)}")
         return (
             f"Error in Speech2Text transcription: {str(e)}",
             audio_duration_str,
@@ -248,9 +302,16 @@ def transcribe_hindi_only(audio):
     try:
         start_time = time.time()
         with st.spinner("Transcribing..."):
-            result = st.session_state.hindi_only_transcriber(
-                {"sampling_rate": sr, "raw": y}
-            )
+            # Check if using MMS model
+            if st.session_state.hindi_only_transcriber.model.name_or_path == "facebook/mms-1b-all":
+                result = st.session_state.hindi_only_transcriber(
+                    {"sampling_rate": sr, "raw": y},
+                    generate_kwargs={"language": "hin", "task": "transcribe"}
+                )
+            else:
+                result = st.session_state.hindi_only_transcriber(
+                    {"sampling_rate": sr, "raw": y}
+                )
             raw_text = result.get("text", "").strip()
             segments = re.split(r'[।,.!?]\s*', raw_text)
             transcription = "\n".join([segment.strip() for segment in segments if segment.strip()])
@@ -258,6 +319,7 @@ def transcribe_hindi_only(audio):
             processing_time_str = f"{processing_time:.2f} seconds"
         return transcription, audio_duration_str, processing_time_str
     except Exception as e:
+        logger.error(f"Error in Hindi-only transcription: {str(e)}")
         return (
             f"Error in Speech2Text transcription: {str(e)}",
             audio_duration_str,
@@ -304,28 +366,72 @@ def main():
 
         # Microphone recording
         st.markdown("### Record Audio", unsafe_allow_html=True)
-        try:
-            audio_input = mic_recorder(
-                start_prompt="🎙️ Record",
-                stop_prompt="⏹️ Stop",
-                key=f"mic_en_hi_{uuid.uuid4()}",
-                format="wav"
+        if st.button("Scan Devices and Record", key="scan_record_en_hi"):
+            try:
+                logger.debug("Scanning devices for English/Hindi tab")
+                st.session_state.working_devices = []
+                devices = list_input_devices()
+                if not devices:
+                    st.session_state.device_error = "No audio input devices detected. Please check your microphone."
+                else:
+                    for idx, name in devices:
+                        if test_device(idx):
+                            st.session_state.working_devices.append((idx, name))
+                    if not st.session_state.working_devices:
+                        st.session_state.device_error = "No working microphones found! Please ensure your microphone is connected and functional."
+                    else:
+                        st.session_state.device_error = None
+                        st.success(f"Found {len(st.session_state.working_devices)} working microphone(s)")
+            except Exception as e:
+                logger.error(f"Error during device scan: {str(e)}")
+                st.session_state.device_error = f"Error scanning devices: {str(e)}"
+
+        if st.session_state.device_error:
+            st.error(f"Error: {st.session_state.device_error}")
+        elif not st.session_state.working_devices:
+            st.info("Click 'Scan Devices and Record' to scan for available microphones.")
+        else:
+            device_names = [name for idx, name in st.session_state.working_devices]
+            chosen_name = st.selectbox("Choose microphone input device", device_names, key="mic_select_en_hi")
+            chosen_idx = next(idx for idx, name in st.session_state.working_devices if name == chosen_name)
+            
+            duration = st.number_input(
+                "Enter recording duration (seconds)",
+                min_value=1,
+                max_value=600,
+                value=5,
+                step=1,
+                key="record_duration_en_hi"
             )
-            if audio_input:
-                st.session_state.recorded_audio = (audio_input['sample_rate'], audio_input['samples'])
-                rms = np.sqrt(np.mean(audio_input['samples']**2))
-                st.write(f"Recorded audio RMS amplitude: {rms:.6f}")
-                if rms < 1e-4:
-                    st.warning("Warning: Recorded audio seems silent!")
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
-                    sf.write(tmpfile.name, audio_input['samples'].astype(np.float32), audio_input['sample_rate'])
-                    st.audio(tmpfile.name)
-                    os.remove(tmpfile.name)
-            elif audio_input is None and st.session_state.mic_error:
-                st.error(f"Microphone error: {st.session_state.mic_error}")
-        except Exception as e:
-            st.session_state.mic_error = str(e)
-            st.error(f"Error accessing microphone: {str(e)}")
+            
+            if st.button("Record Audio", key="record_en_hi"):
+                try:
+                    sd.default.device = (chosen_idx, None)
+                    st.info(f"Recording for {duration} seconds from '{chosen_name}'...")
+                    recording = sd.rec(int(duration * 44100), samplerate=44100, channels=1)
+                    sd.wait()
+                    st.success("Recording finished!")
+                    
+                    st.session_state.recorded_audio = (44100, recording)
+                    rms = np.sqrt(np.mean(recording**2))
+                    st.write(f"Recorded audio RMS amplitude: {rms:.6f}")
+                    if rms < 1e-4:
+                        st.warning("Warning: Recorded audio seems silent!")
+                    
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
+                        sf.write(tmpfile.name, recording.astype(np.float32), 44100)
+                        st.audio(tmpfile.name)
+                        st.session_state.recorded_audio_path = tmpfile.name
+                except Exception as e:
+                    logger.error(f"Error recording audio: {str(e)}")
+                    st.error(f"Error recording audio: {str(e)}")
+                finally:
+                    if st.session_state.recorded_audio_path and os.path.exists(st.session_state.recorded_audio_path):
+                        try:
+                            os.remove(st.session_state.recorded_audio_path)
+                            st.session_state.recorded_audio_path = None
+                        except Exception as e:
+                            logger.error(f"Error cleaning up temporary file: {str(e)}")
 
         uploaded_file_en_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_en_hi")
         
@@ -334,17 +440,25 @@ def main():
             if audio:
                 transcription, duration, proc_time = transcribe_english_hindi(audio, language_selection)
                 st.session_state.transcription_en_hi = transcription
-                st.session_state.duration_en_hi = duration
-                st.session_state.proc_time_en_hi = proc_time
+                st.session_state.transcription_duration_en_hi = duration
+                st.session_state.transcription_proc_time_en_hi = proc_time
+                # Clean up recorded audio after transcription
+                st.session_state.recorded_audio = None
+                if st.session_state.recorded_audio_path and os.path.exists(st.session_state.recorded_audio_path):
+                    try:
+                        os.remove(st.session_state.recorded_audio_path)
+                        st.session_state.recorded_audio_path = None
+                    except Exception as e:
+                        logger.error(f"Error cleaning up temporary file after transcription: {str(e)}")
             else:
                 st.error("No audio input provided. Please record or upload an audio file.")
         
         st.text_area("Transcription", st.session_state.transcription_en_hi, height=150, disabled=True, key="transcription_en_hi")
         col3, col4 = st.columns(2)
         with col3:
-            st.text_input("Audio Duration", st.session_state.duration_en_hi, disabled=True, key="duration_en_hi")
+            st.metric("Audio Duration", st.session_state.transcription_duration_en_hi)
         with col4:
-            st.text_input("Processing Time", st.session_state.proc_time_en_hi, disabled=True, key="proc_time_en_hi")
+            st.metric("Processing Time", st.session_state.transcription_proc_time_en_hi)
 
     with tab2:
         st.markdown("### This Speech2Text model is specialized for Hindi language only", unsafe_allow_html=True)
@@ -359,28 +473,72 @@ def main():
 
         # Microphone recording
         st.markdown("### Record Audio", unsafe_allow_html=True)
-        try:
-            audio_input = mic_recorder(
-                start_prompt="🎙️ Record",
-                stop_prompt="⏹️ Stop",
-                key=f"mic_hi_{uuid.uuid4()}",
-                format="wav"
+        if st.button("Scan Devices and Record", key="scan_record_hi"):
+            try:
+                logger.debug("Scanning devices for Hindi-only tab")
+                st.session_state.working_devices = []
+                devices = list_input_devices()
+                if not devices:
+                    st.session_state.device_error = "No audio input devices detected. Please check your microphone."
+                else:
+                    for idx, name in devices:
+                        if test_device(idx):
+                            st.session_state.working_devices.append((idx, name))
+                    if not st.session_state.working_devices:
+                        st.session_state.device_error = "No working microphones found! Please ensure your microphone is connected and functional."
+                    else:
+                        st.session_state.device_error = None
+                        st.success(f"Found {len(st.session_state.working_devices)} working microphone(s)")
+            except Exception as e:
+                logger.error(f"Error during device scan: {str(e)}")
+                st.session_state.device_error = f"Error scanning devices: {str(e)}"
+
+        if st.session_state.device_error:
+            st.error(f"Error: {st.session_state.device_error}")
+        elif not st.session_state.working_devices:
+            st.info("Click 'Scan Devices and Record' to scan for available microphones.")
+        else:
+            device_names = [name for idx, name in st.session_state.working_devices]
+            chosen_name = st.selectbox("Choose microphone input device", device_names, key="mic_select_hi")
+            chosen_idx = next(idx for idx, name in st.session_state.working_devices if name == chosen_name)
+            
+            duration = st.number_input(
+                "Enter recording duration (seconds)",
+                min_value=1,
+                max_value=600,
+                value=5,
+                step=1,
+                key="record_duration_hi"
             )
-            if audio_input:
-                st.session_state.recorded_audio = (audio_input['sample_rate'], audio_input['samples'])
-                rms = np.sqrt(np.mean(audio_input['samples']**2))
-                st.write(f"Recorded audio RMS amplitude: {rms:.6f}")
-                if rms < 1e-4:
-                    st.warning("Warning: Recorded audio seems silent!")
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
-                    sf.write(tmpfile.name, audio_input['samples'].astype(np.float32), audio_input['sample_rate'])
-                    st.audio(tmpfile.name)
-                    os.remove(tmpfile.name)
-            elif audio_input is None and st.session_state.mic_error:
-                st.error(f"Microphone error: {st.session_state.mic_error}")
-        except Exception as e:
-            st.session_state.mic_error = str(e)
-            st.error(f"Error accessing microphone: {str(e)}")
+            
+            if st.button("Record Audio", key="record_hi"):
+                try:
+                    sd.default.device = (chosen_idx, None)
+                    st.info(f"Recording for {duration} seconds from '{chosen_name}'...")
+                    recording = sd.rec(int(duration * 44100), samplerate=44100, channels=1)
+                    sd.wait()
+                    st.success("Recording finished!")
+                    
+                    st.session_state.recorded_audio = (44100, recording)
+                    rms = np.sqrt(np.mean(recording**2))
+                    st.write(f"Recorded audio RMS amplitude: {rms:.6f}")
+                    if rms < 1e-4:
+                        st.warning("Warning: Recorded audio seems silent!")
+                    
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
+                        sf.write(tmpfile.name, recording.astype(np.float32), 44100)
+                        st.audio(tmpfile.name)
+                        st.session_state.recorded_audio_path = tmpfile.name
+                except Exception as e:
+                    logger.error(f"Error recording audio: {str(e)}")
+                    st.error(f"Error recording audio: {str(e)}")
+                finally:
+                    if st.session_state.recorded_audio_path and os.path.exists(st.session_state.recorded_audio_path):
+                        try:
+                            os.remove(st.session_state.recorded_audio_path)
+                            st.session_state.recorded_audio_path = None
+                        except Exception as e:
+                            logger.error(f"Error cleaning up temporary file: {str(e)}")
 
         uploaded_file_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_hi")
         
@@ -389,17 +547,25 @@ def main():
             if audio:
                 transcription, duration, proc_time = transcribe_hindi_only(audio)
                 st.session_state.transcription_hi = transcription
-                st.session_state.duration_hi = duration
-                st.session_state.proc_time_hi = proc_time
+                st.session_state.transcription_duration_hi = duration
+                st.session_state.transcription_proc_time_hi = proc_time
+                # Clean up recorded audio after transcription
+                st.session_state.recorded_audio = None
+                if st.session_state.recorded_audio_path and os.path.exists(st.session_state.recorded_audio_path):
+                    try:
+                        os.remove(st.session_state.recorded_audio_path)
+                        st.session_state.recorded_audio_path = None
+                    except Exception as e:
+                        logger.error(f"Error cleaning up temporary file after transcription: {str(e)}")
             else:
                 st.error("No audio input provided. Please record or upload an audio file.")
         
         st.text_area("Transcription", st.session_state.transcription_hi, height=150, disabled=True, key="transcription_hi")
         col5, col6 = st.columns(2)
         with col5:
-            st.text_input("Audio Duration", st.session_state.duration_hi, disabled=True, key="duration_hi")
+            st.metric("Audio Duration", st.session_state.transcription_duration_hi)
         with col6:
-            st.text_input("Processing Time", st.session_state.proc_time_hi, disabled=True, key="proc_time_hi")
+            st.metric("Processing Time", st.session_state.transcription_proc_time_hi)
 
 if __name__ == "__main__":
     main()
