@@ -179,7 +179,7 @@ def process_audio(audio, sr=16000):
             with open(temp_file, "wb") as f:
                 f.write(audio.read())
             try:
-                y, input_sr = librosa.load(temp_file, sr=sr, mono=True, backend="soundfile")
+                y, input_sr = librosa.load(temp_file, sr=sr, mono=True)
             finally:
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
