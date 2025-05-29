@@ -10,7 +10,7 @@ import io
 import uuid
 import re
 import os
-import json
+import tempfile
 
 # Custom CSS for styling
 st.markdown("""
@@ -96,37 +96,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# JavaScript to enumerate audio devices
-JS_CODE = """
-<script>
-async function getAudioDevices() {
-    try {
-        // Request microphone permission
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        // Enumerate devices
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const audioDevices = devices
-            .filter(device => device.kind === 'audioinput')
-            .map(device => ({ id: device.deviceId, label: device.label || 'Microphone ' + (devices.indexOf(device) + 1) }));
-        // Stop stream to release microphone
-        stream.getTracks().forEach(track => track.stop());
-        // Send devices to Streamlit
-        window.parent.postMessage({
-            type: 'audio_devices',
-            devices: audioDevices
-        }, '*');
-        return audioDevices;
-    } catch (err) {
-        window.parent.postMessage({
-            type: 'audio_devices_error',
-            error: err.message
-        }, '*');
-        return [];
-    }
-}
-</script>
-"""
-
 # Initialize session state
 if 'english_hindi_transcriber' not in st.session_state:
     st.session_state.english_hindi_transcriber = None
@@ -141,9 +110,8 @@ if 'english_hindi_transcriber' not in st.session_state:
     st.session_state.proc_time_hi = "0.0 seconds"
     st.session_state.status_en_hi = "Speech2Text is OFF"
     st.session_state.status_hi = "Speech2Text is OFF"
-    st.session_state.audio_devices = []
     st.session_state.recorded_audio = None
-    st.session_state.device_error = None
+    st.session_state.mic_error = None
 
 # Model loading/unloading functions
 def load_english_hindi(model_size="tiny"):
@@ -301,14 +269,6 @@ def main():
     st.markdown('<div class="header"><h1>Speech Recognition System</h1></div>', unsafe_allow_html=True)
     st.markdown("### Choose between Speech2Text models", unsafe_allow_html=True)
 
-    # Handle JavaScript messages
-    if 'js_message' in st.session_state:
-        message = st.session_state.js_message
-        if message.get('type') == 'audio_devices':
-            st.session_state.audio_devices = message.get('devices', [])
-        elif message.get('type') == 'audio_devices_error':
-            st.session_state.device_error = message.get('error', 'Unknown error')
-
     # Tabs
     tab1, tab2 = st.tabs(["Speech2Text (English & Hindi)", "Speech2Text (Hindi Only)"])
 
@@ -344,44 +304,12 @@ def main():
 
         # Microphone recording
         st.markdown("### Record Audio", unsafe_allow_html=True)
-        if st.button("Scan Devices and Record", key=f"scan_record_en_hi_{uuid.uuid4()}"):
-            # Inject JavaScript to get devices
-            st.components.v1.html(f"""
-                {JS_CODE}
-                <button onclick="getAudioDevices()">Get Devices</button>
-                <script>
-                    window.addEventListener('message', (event) => {{
-                        if (event.data.type === 'audio_devices' || event.data.type === 'audio_devices_error') {{
-                            fetch('/_stcore/stream', {{
-                                method: 'POST',
-                                headers: {{ 'Content-Type': 'application/json' }},
-                                body: JSON.stringify({{
-                                    type: 'set_session_state',
-                                    key: 'js_message',
-                                    value: event.data
-                                }})
-                            }});
-                        }}
-                    }});
-                    getAudioDevices();
-                </script>
-            """, height=0)
-        
-        if st.session_state.device_error:
-            st.error(f"Error accessing microphone: {st.session_state.device_error}")
-        elif not st.session_state.audio_devices:
-            st.info("Click 'Scan Devices and Record' to request microphone permission and list available devices.")
-        else:
-            device_labels = [device['label'] for device in st.session_state.audio_devices]
-            selected_device = st.selectbox("Select Microphone", device_labels, key="mic_select_en_hi")
-            selected_device_id = next(device['id'] for device in st.session_state.audio_devices if device['label'] == selected_device)
-            
-            # Configure mic_recorder with selected device
+        try:
             audio_input = mic_recorder(
                 start_prompt="🎙️ Record",
                 stop_prompt="⏹️ Stop",
                 key=f"mic_en_hi_{uuid.uuid4()}",
-                device=selected_device_id
+                format="wav"
             )
             if audio_input:
                 st.session_state.recorded_audio = (audio_input['sample_rate'], audio_input['samples'])
@@ -389,11 +317,15 @@ def main():
                 st.write(f"Recorded audio RMS amplitude: {rms:.6f}")
                 if rms < 1e-4:
                     st.warning("Warning: Recorded audio seems silent!")
-                # Save to temporary file for playback
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
                     sf.write(tmpfile.name, audio_input['samples'].astype(np.float32), audio_input['sample_rate'])
                     st.audio(tmpfile.name)
                     os.remove(tmpfile.name)
+            elif audio_input is None and st.session_state.mic_error:
+                st.error(f"Microphone error: {st.session_state.mic_error}")
+        except Exception as e:
+            st.session_state.mic_error = str(e)
+            st.error(f"Error accessing microphone: {str(e)}")
 
         uploaded_file_en_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_en_hi")
         
@@ -427,42 +359,12 @@ def main():
 
         # Microphone recording
         st.markdown("### Record Audio", unsafe_allow_html=True)
-        if st.button("Scan Devices and Record", key=f"scan_record_hi_{uuid.uuid4()}"):
-            st.components.v1.html(f"""
-                {JS_CODE}
-                <button onclick="getAudioDevices()">Get Devices</button>
-                <script>
-                    window.addEventListener('message', (event) => {{
-                        if (event.data.type === 'audio_devices' || event.data.type === 'audio_devices_error') {{
-                            fetch('/_stcore/stream', {{
-                                method: 'POST',
-                                headers: {{ 'Content-Type': 'application/json' }},
-                                body: JSON.stringify({{
-                                    type: 'set_session_state',
-                                    key: 'js_message',
-                                    value: event.data
-                                }})
-                            }});
-                        }}
-                    }});
-                    getAudioDevices();
-                </script>
-            """, height=0)
-        
-        if st.session_state.device_error:
-            st.error(f"Error accessing microphone: {st.session_state.device_error}")
-        elif not st.session_state.audio_devices:
-            st.info("Click 'Scan Devices and Record' to request microphone permission and list available devices.")
-        else:
-            device_labels = [device['label'] for device in st.session_state.audio_devices]
-            selected_device = st.selectbox("Select Microphone", device_labels, key="mic_select_hi")
-            selected_device_id = next(device['id'] for device in st.session_state.audio_devices if device['label'] == selected_device)
-            
+        try:
             audio_input = mic_recorder(
                 start_prompt="🎙️ Record",
                 stop_prompt="⏹️ Stop",
                 key=f"mic_hi_{uuid.uuid4()}",
-                device=selected_device_id
+                format="wav"
             )
             if audio_input:
                 st.session_state.recorded_audio = (audio_input['sample_rate'], audio_input['samples'])
@@ -474,6 +376,11 @@ def main():
                     sf.write(tmpfile.name, audio_input['samples'].astype(np.float32), audio_input['sample_rate'])
                     st.audio(tmpfile.name)
                     os.remove(tmpfile.name)
+            elif audio_input is None and st.session_state.mic_error:
+                st.error(f"Microphone error: {st.session_state.mic_error}")
+        except Exception as e:
+            st.session_state.mic_error = str(e)
+            st.error(f"Error accessing microphone: {str(e)}")
 
         uploaded_file_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_hi")
         
