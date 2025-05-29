@@ -460,7 +460,7 @@ def main():
         with col5:
             st.text_input("Audio Duration", st.session_state.duration_hi, disabled=True, key="duration_hi")
         with col6:
-            st.text_input("Processing Time", st.session_state.proc_time_ms, placeholder="proc_time_hi", unsafe_allow_html=True)
+            st.text_input("Processing Time", st.session_state.proc_time_hi, disabled=True, key="proc_time_hi")
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
