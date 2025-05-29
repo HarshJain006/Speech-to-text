@@ -151,27 +151,34 @@ def audio_device_selector(key):
     return st.session_state.get(f"device_{key}", None)
 
 # Initialize session state
-if 'english_hindi_transcriber' not in st.session_state:
-    st.session_state.english_hindi_transcriber = None
-    st.session_state.device_en_hi = None
-    st.session_state.device_hi = None
-    st.session_state.english_hindi_loaded = False
-    st.session_state.hindi_only_transcriber = None
-    st.session_state.hindi_only_loaded = False
-    st.session_state.transcription_en_hi = ""
-    st.session_state.duration_en_hi = "0.0 seconds"
-    st.session_state.proc_time_en_hi = "0.0 seconds"
-    st.session_state.transcription_hi = ""
-    st.session_state.duration_hi = "0.0 seconds"
-    st.session_state.proc_time_hi = "0.0 seconds"
-    st.session_state.status_en_hi = "Speech2Text is OFF"
-    st.session_state.status_hi = "Speech2Text is OFF"
-    st.session_state.debug_info = ""
-    st.session_state.retry_count_en_hi = 0
-    st.session_state.retry_count_hi = 0
+def initialize_session_state():
+    defaults = {
+        'english_hindi_transcriber': None,
+        'device_en_hi': None,
+        'device_hi': None,
+        'english_hindi_loaded': False,
+        'hindi_only_transcriber': None,
+        'hindi_only_loaded': False,
+        'transcription_en_hi': "",
+        'duration_en_hi': "0.0 seconds",
+        'proc_time_en_hi': "0.0 seconds",
+        'transcription_hi': "",
+        'duration_hi': "0.0 seconds",
+        'proc_time_hi': "0.0 seconds",
+        'status_en_hi': "Speech2Text is OFF",
+        'status_hi': "Speech2Text is OFF",
+        'debug_info': "",
+        'retry_count_en': 0,
+        'retry_count_hi': 0,
+        'audio_input_en_hi': None,
+        'audio_input_hi': None
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
-# Model loading/unloading functions
-def load_english_hindi(model_size="tiny"):
+# Model loading/unloading
+def load_english_hindi(model_size="small"):
     if not st.session_state.english_hindi_loaded:
         try:
             from transformers import pipeline
@@ -183,8 +190,8 @@ def load_english_hindi(model_size="tiny"):
             st.session_state.english_hindi_loaded = True
             return f"Speech2Text (English & Hindi) {model_size} loaded successfully"
         except Exception as e:
-            return f"Error loading Speech2Text (English & Hindi): {str(e)}"
-    return "Speech2Text (English & Hindi) already loaded"
+            return f"Error loading Speech2Text: {str(e)}"
+    return "Speech2Text already loaded"
 
 def load_hindi_only():
     if not st.session_state.hindi_only_loaded:
@@ -198,7 +205,7 @@ def load_hindi_only():
             st.session_state.hindi_only_loaded = True
             return "Speech2Text (Hindi Only) loaded successfully"
         except Exception as e:
-            return f"Error loading Speech2Text (Hindi Only): {str(e)}"
+            return f"Error loading Speech2Text: {str(e)}"
     return "Speech2Text (Hindi Only) already loaded"
 
 def unload_english_hindi():
@@ -206,56 +213,54 @@ def unload_english_hindi():
     st.session_state.english_hindi_loaded = False
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    return "Speech2Text (English & Hindi) unloaded"
+    return None
 
 def unload_hindi_only():
     st.session_state.hindi_only_transcriber = None
     st.session_state.hindi_only_loaded = False
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    return "Speech2Text (Hindi Only) unloaded"
+    return None
 
-# Audio processing function
+# Audio processing
 def process_audio(audio, sr=16000):
-    if audio is None:
-        return None, "0.0 seconds", "No audio detected"
     try:
         start_time = time.time()
-        if isinstance(audio, bytes):  # From audio_recorder (microphone)
+        if isinstance(audio, bytes):
             with io.BytesIO(audio) as wav_io:
                 y, input_sr = sf.read(wav_io)
             if y is None or len(y) == 0:
-                return None, "0.0 seconds", "Empty audio data from microphone"
+                return None, "0.0 seconds", "Empty audio data"
             if not isinstance(y, np.ndarray):
-                return None, "0.0 seconds", f"Invalid microphone data type: {type(y)}"
+                return None, "0.0 seconds", f"Invalid data type: {type(y)}"
             if input_sr <= 0:
-                return None, "0.0 seconds", f"Invalid sample rate: {input_sr}"
+                return None, "0.0 seconds", f"Invalid audio rate: {sr}"
             debug_info = f"Microphone input: shape={y.shape}, dtype={y.dtype}, sample_rate={input_sr}, max_amplitude={np.max(np.abs(y)) if len(y) > 0 else 0}"
             st.session_state.debug_info = debug_info
             y = y.astype(np.float32)
-            if len(y.shape) == 2:
+            if len(y.shape) > 1:
                 y = np.mean(y, axis=1)
             max_abs = np.max(np.abs(y))
             if max_abs > 0:
-                y *= (0.5 / max_abs)  # Amplify to 0.5 peak
-            if np.max(np.abs(y)) < 1e-7:
-                return None, "0.0 seconds", "Microphone audio is too quiet (max amplitude below threshold)"
+                y *= (0.25 / max_abs)  # Reduced amplification
+            if np.max(np.abs(y)) < 1e-6:  # Adjusted threshold
+                return None, "0.0 seconds", "Microphone audio too quiet"
             if input_sr != sr:
                 y = librosa.resample(y, orig_sr=input_sr, target_sr=sr)
-        else:  # From file upload
+        else:  # File upload
             if hasattr(audio, 'name'):
                 ext = os.path.splitext(audio.name)[1].lower()
                 if ext not in ['.wav', '.mp3']:
-                    return None, "0.0 seconds", f"Unsupported file format: {ext}. Please upload WAV or MP3."
-            temp_file = f"temp_audio_{uuid.uuid4()}{ext if hasattr(audio, 'name') else '.wav'}"
+                    return None, "0.0 seconds", f"Unsupported file format: {ext}"
+            temp_file = f"temp_audio_{uuid.uuid4()}{ext if 'ext' in locals() else '.wav'}"
             with open(temp_file, "wb") as f:
                 f.write(audio.read())
             try:
                 y, input_sr = sf.read(temp_file)
                 if len(y) == 0:
-                    return None, "0.0 seconds", "No audio data found in file"
+                    return None, "0.0 seconds", "No audio data found"
                 y = y.astype(np.float32)
-                if len(y.shape) == 2:
+                if len(y.shape) > 1:
                     y = np.mean(y, axis=1)
                 if input_sr != sr:
                     y = librosa.resample(y, orig_sr=input_sr, target_sr=sr)
@@ -269,25 +274,21 @@ def process_audio(audio, sr=16000):
         st.session_state.debug_info = debug_info
         audio_duration_str = f"{audio_duration:.2f} seconds"
         if np.max(np.abs(y)) > 0:
-            y /= np.max(np.abs(y))  # Normalize
+            y /= np.max(np.abs(y))
         return (sr, y), audio_duration_str, None
     except Exception as e:
         return None, "0.0 seconds", f"Error processing audio: {str(e)}"
 
 # Transcription functions
-def transcribe_english_hindi(audio, language, max_retries=3):
+def transcribe_english_hindi(audio, language, max_retries=2):
     if not st.session_state.english_hindi_loaded:
-        return (
-            "Please turn on Speech2Text (English & Hindi) first",
-            "0.0 seconds",
-            "0.0 seconds"
-        )
+        return "Please turn on Speech2Text first", "0.0 seconds", "0.0 seconds"
     for attempt in range(max_retries):
         processed_audio, audio_duration_str, error = process_audio(audio)
         if error:
-            st.session_state.retry_count_en_hi += 1
-            if st.session_state.retry_count_en_hi >= max_retries:
-                return f"{error} (Retry {st.session_state.retry_count_en_hi}/{max_retries})", audio_duration_str, "0.0 seconds"
+            st.session_state.retry_count_en += 1
+            if st.session_state.retry_count_en >= max_retries:
+                return f"{error} (Retry {st.session_state.retry_count_en}/{max_retries})", audio_duration_str, "0.0 seconds"
             continue
         sr, y = processed_audio
         try:
@@ -299,39 +300,28 @@ def transcribe_english_hindi(audio, language, max_retries=3):
                     generate_kwargs={"language": lang_code, "task": "transcribe"},
                     return_timestamps=True
                 )
-                if "chunks" in result and result["chunks"]:
-                    transcription = "\n".join([chunk["text"].strip() for chunk in result["chunks"] if chunk["text"].strip()])
-                else:
-                    transcription = result.get("text", "").strip()
+                transcription = "\n".join([chunk["text"].strip() for chunk in result.get("chunks", []) if chunk["text"].strip()]) or result.get("text", "").strip()
                 if not transcription:
-                    transcription = "Warning: No transcription generated. Audio may be too short or unclear."
+                    transcription = "Warning: No transcription generated"
                 processing_time = time.time() - start_time
                 processing_time_str = f"{processing_time:.2f} seconds"
-                st.session_state.retry_count_en_hi = 0
+                st.session_state.retry_count_en = 0
                 return transcription, audio_duration_str, processing_time_str
         except Exception as e:
-            st.session_state.retry_count_en_hi += 1
-            if st.session_state.retry_count_en_hi >= max_retries:
-                return (
-                    f"Error in transcription: {str(e)} (Retry {max_retries}/{max_retries})",
-                    audio_duration_str,
-                    "0.0 seconds"
-                )
-    return "Transcription failed after retries", audio_duration_str, "0.0 seconds"
+            st.session_state.retry_count_en += 1
+            if st.session_state.retry_count_en >= max_retries:
+                return f"Error in transcription: {str(e)}", audio_duration_str, "0.0 seconds"
+    return "Transcription failed", audio_duration_str, "0.0 seconds"
 
-def transcribe_hindi_only(audio, max_retries=3):
+def transcribe_hindi_only(audio, max_retries=2):
     if not st.session_state.hindi_only_loaded:
-        return (
-            "Please turn on Speech2Text (Hindi Only) first",
-            "0.0 seconds",
-            "0.0 seconds"
-        )
+        return "Please turn on Speech2Text first", "0.0 seconds", "0.0 seconds"
     for attempt in range(max_retries):
         processed_audio, audio_duration_str, error = process_audio(audio)
         if error:
             st.session_state.retry_count_hi += 1
             if st.session_state.retry_count_hi >= max_retries:
-                return f"{error} (Retry {max_retries}/{max_retries})", audio_duration_str, "0.0 seconds"
+                return f"{error} (Retry {st.session_state.retry_count_hi}/{max_retries})", audio_duration_str, "0.0 seconds"
             continue
         sr, y = processed_audio
         try:
@@ -344,7 +334,7 @@ def transcribe_hindi_only(audio, max_retries=3):
                 segments = re.split(r'[।,.!?]\s*', raw_text)
                 transcription = "\n".join([segment.strip() for segment in segments if segment.strip()])
                 if not transcription:
-                    transcription = "Warning: No transcription generated. Audio may be too short or unclear."
+                    transcription = "Warning: No transcription generated"
                 processing_time = time.time() - start_time
                 processing_time_str = f"{processing_time:.2f} seconds"
                 st.session_state.retry_count_hi = 0
@@ -352,20 +342,16 @@ def transcribe_hindi_only(audio, max_retries=3):
         except Exception as e:
             st.session_state.retry_count_hi += 1
             if st.session_state.retry_count_hi >= max_retries:
-                return (
-                    f"Error in transcription: {str(e)} (Retry {max_retries}/{max_retries})",
-                    audio_duration_str,
-                    "0.0 seconds"
-                )
-    return "Transcription failed after retries", audio_duration_str, "0.0 seconds"
+                return f"Error in transcription: {str(e)}", audio_duration_str, "0.0 seconds"
+    return "Transcription failed", audio_duration_str, "0.0 seconds"
 
 # Main app
 def main():
+    initialize_session_state()
     st.markdown('<div class="header"><h1>Speech Recognition System</h1></div>', unsafe_allow_html=True)
     st.markdown("Select a Speech-to-Text model and record/upload audio.", unsafe_allow_html=True)
     st.markdown("**Note**: Use Chrome/Firefox and enable microphone permissions (padlock icon in URL bar).", unsafe_allow_html=True)
 
-    # Tabs
     tab1, tab2 = st.tabs(["Speech2Text (English & Hindi)", "Speech2Text (Hindi Only)"])
 
     with tab1:
@@ -378,7 +364,7 @@ def main():
                 selectable_models,
                 index=0,
                 format_func=lambda x: f"{x} (disabled)" if x == "large-v2" else x,
-                help="Tiny or small recommended for Indian accents. Large-v2 is disabled.",
+                help="Tiny or small recommended for Indian accents",
                 key="model_size_en_hi"
             )
             power_button_en_hi = st.button(
@@ -411,14 +397,16 @@ def main():
             pause_threshold=0.5
         )
         if st.button("Retry Recording", key="retry_en_hi"):
-            st.session_state.retry_count_en_hi = 0
-            st.rerun()
+            st.session_state.audio_input_en_hi = None
+            st.session_state.retry_count_en = 0
+            st.session_state.transcription_en_hi = ""
         
         uploaded_file_en_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_en_hi")
         
         if st.button("Transcribe with Speech2Text", key="transcribe_en_hi"):
             audio = audio_input_en_hi or uploaded_file_en_hi
             if audio:
+                st.session_state.audio_input_en_hi = audio
                 transcription, duration, proc_time = transcribe_english_hindi(audio, language_selection)
                 st.session_state.transcription_en_hi = transcription
                 st.session_state.duration_en_hi = duration
@@ -426,7 +414,8 @@ def main():
                 if "too quiet" in transcription.lower():
                     st.markdown('<div class="warning-box">Warning: Audio is too quiet. Increase microphone gain or speak louder.</div>', unsafe_allow_html=True)
             else:
-                st.markdown('<div class="warning-box">No audio input provided. Please record or upload an audio file.</div>', unsafe_allow_html=True)
+                st.session_state.transcription_en_hi = "No audio input provided. Please record or upload an audio file."
+                st.markdown('<div class="warning-box">No audio input provided.</div>', unsafe_allow_html=True)
         
         st.text_area("Transcription", st.session_state.transcription_en_hi, height=150, disabled=True, key="transcription_en_hi")
         col3, col4 = st.columns(2)
@@ -461,14 +450,16 @@ def main():
             pause_threshold=0.5
         )
         if st.button("Retry Recording", key="retry_hi"):
+            st.session_state.audio_input_hi = None
             st.session_state.retry_count_hi = 0
-            st.rerun()
+            st.session_state.transcription_hi = ""
         
         uploaded_file_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_hi")
         
         if st.button("Transcribe with Speech2Text", key="transcribe_hi"):
             audio = audio_input_hi or uploaded_file_hi
             if audio:
+                st.session_state.audio_input_hi = audio
                 transcription, duration, proc_time = transcribe_hindi_only(audio)
                 st.session_state.transcription_hi = transcription
                 st.session_state.duration_hi = duration
@@ -476,7 +467,8 @@ def main():
                 if "too quiet" in transcription.lower():
                     st.markdown('<div class="warning-box">Warning: Audio is too quiet. Increase microphone gain or speak louder.</div>', unsafe_allow_html=True)
             else:
-                st.markdown('<div class="warning-box">No audio input provided. Please record or upload an audio file.</div>', unsafe_allow_html=True)
+                st.session_state.transcription_hi = "No audio input provided. Please record or upload an audio file."
+                st.markdown('<div class="warning-box">No audio input provided.</div>', unsafe_allow_html=True)
         
         st.text_area("Transcription", st.session_state.transcription_hi, height=150, disabled=True, key="transcription_hi")
         col5, col6 = st.columns(2)
