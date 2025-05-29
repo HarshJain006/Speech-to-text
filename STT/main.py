@@ -178,9 +178,13 @@ def process_audio(audio, sr=16000):
             y = y.astype(np.float32)
             if len(y.shape) == 2:
                 y = np.mean(y, axis=1)
-            # Check for silent audio
-            if np.max(np.abs(y)) < 1e-6:
-                return None, "0.0 seconds", "Microphone audio is silent (no detectable sound)"
+            # Amplify signal to handle low-gain microphones
+            max_abs = np.max(np.abs(y))
+            if max_abs > 0:
+                y *= (0.5 / max_abs)  # Normalize to 0.5 peak amplitude
+            # Check for silent audio with lower threshold
+            if np.max(np.abs(y)) < 1e-7:
+                return None, "0.0 seconds", "Microphone audio is too quiet (max amplitude below threshold)"
             # Resample if necessary
             if input_sr != sr:
                 y = librosa.resample(y, orig_sr=input_sr, target_sr=sr)
@@ -328,7 +332,7 @@ def main():
             )
 
         st.markdown("**Record Audio**")
-        audio_input_en_hi = audio_recorder(key="audio_en_hi")
+        audio_input_en_hi = audio_recorder(key="audio_en_hi", energy_threshold=100, pause_threshold=0.5)
         uploaded_file_en_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_en_hi")
         
         if st.button("Transcribe with Speech2Text", key="transcribe_en_hi"):
@@ -338,6 +342,8 @@ def main():
                 st.session_state.transcription_en_hi = transcription
                 st.session_state.duration_en_hi = duration
                 st.session_state.proc_time_en_hi = proc_time
+                if transcription.startswith("Microphone audio is too quiet"):
+                    st.markdown(f'<div class="warning-box">{transcription}</div>', unsafe_allow_html=True)
             else:
                 st.markdown('<div class="warning-box">No audio input provided. Please record or upload an audio file.</div>', unsafe_allow_html=True)
         
@@ -363,7 +369,7 @@ def main():
         st.markdown(f'<div class="status-box">{st.session_state.status_hi}</div>', unsafe_allow_html=True)
 
         st.markdown("**Record Audio**")
-        audio_input_hi = audio_recorder(key="audio_hi")
+        audio_input_hi = audio_recorder(key="audio_hi", energy_threshold=100, pause_threshold=0.5)
         uploaded_file_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_hi")
         
         if st.button("Transcribe with Speech2Text", key="transcribe_hi"):
@@ -373,6 +379,8 @@ def main():
                 st.session_state.transcription_hi = transcription
                 st.session_state.duration_hi = duration
                 st.session_state.proc_time_hi = proc_time
+                if transcription.startswith("Microphone audio is too quiet"):
+                    st.markdown(f'<div class="warning-box">{transcription}</div>', unsafe_allow_html=True)
             else:
                 st.markdown('<div class="warning-box">No audio input provided. Please record or upload an audio file.</div>', unsafe_allow_html=True)
         
