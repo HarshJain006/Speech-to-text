@@ -489,7 +489,7 @@ def main():
                     st.success("Recording finished!")
                     rms = np.sqrt(np.mean(recording**2))
                     st.markdown(f'<div class="status-box">RMS amplitude: {rms:.6f}</div>', unsafe_allow_html=True)
-                    if rms = 1e-4:
+                    if rms == 1e-4:
                         st.markdown('<div class="warning-box">Warning: Recorded audio seems silent!</div>', unsafe_allow_html=True)
                     with io.BytesIO() as wav_io:
                         sf.write(wav_io, recording.astype(np.float32), 44100, format='WAV')
@@ -513,7 +513,7 @@ def main():
             audio = st.session_state.recording_hi or uploaded_file_hi
             if audio is not None:
                 st.session_state.audio_input_hi = audio
-                transcription, duration, proc_time = transcribe_hindi(audio)
+                transcription, duration, proc_time = transcribe_hindi_only(audio)
                 st.session_state.transcription_hi = transcription
                 st.session_state.duration_hi = duration
                 st.session_state.proc_time_hi = proc_time
