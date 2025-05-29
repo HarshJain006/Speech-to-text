@@ -1,5 +1,5 @@
 import streamlit as st
-from st_audiorec import st_audiorec
+from audio_recorder_streamlit import audio_recorder
 import numpy as np
 import time
 import torch
@@ -162,7 +162,7 @@ def process_audio(audio, sr=16000):
     if audio is None:
         return None, "0.0 seconds", "No audio detected"
     try:
-        if isinstance(audio, bytes):  # From st_audiorec (microphone)
+        if isinstance(audio, bytes):  # From audio_recorder (microphone)
             # Read WAV bytes using soundfile
             with io.BytesIO(audio) as wav_io:
                 y, input_sr = sf.read(wav_io)
@@ -328,7 +328,7 @@ def main():
             )
 
         st.markdown("**Record Audio**")
-        audio_input_en_hi = st_audiorec(key="audio_en_hi")
+        audio_input_en_hi = audio_recorder(key="audio_en_hi")
         uploaded_file_en_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_en_hi")
         
         if st.button("Transcribe with Speech2Text", key="transcribe_en_hi"):
@@ -363,7 +363,7 @@ def main():
         st.markdown(f'<div class="status-box">{st.session_state.status_hi}</div>', unsafe_allow_html=True)
 
         st.markdown("**Record Audio**")
-        audio_input_hi = st_audiorec(key="audio_hi")
+        audio_input_hi = audio_recorder(key="audio_hi")
         uploaded_file_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_hi")
         
         if st.button("Transcribe with Speech2Text", key="transcribe_hi"):
