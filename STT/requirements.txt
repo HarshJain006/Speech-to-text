@@ -1,6 +1,6 @@
 streamlit==1.38.0
-streamlit-mic-recorder==0.0.6
-transformers==4.44.2
+streamlit-mic-recorder==0.0.1
+transformers==4.46.0
 numpy==2.1.2
 torch==2.5.0
 librosa==0.10.2
