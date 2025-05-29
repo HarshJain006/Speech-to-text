@@ -7,5 +7,4 @@ portaudio19-dev
 libprotobuf-dev
 protobuf-compiler
 build-essential
-
-
+FFmpeg
