@@ -1,6 +1,6 @@
 # Core dependencies for the speech recognition Streamlit app
-streamlit==1.38.0
-numpy==1.26.4
+streamlit==1.39.0
+numpy==2.1.2
 torch==2.5.0
 transformers==4.46.0
 librosa==0.10.2
