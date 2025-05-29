@@ -1,2 +1,7 @@
-pkg-config cmake
+pkg-config
+cmake
+g++
+make
+libprotobuf-dev
+protobuf-compiler
 ffmpeg 
