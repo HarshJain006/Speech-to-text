@@ -345,15 +345,14 @@ def main():
 
         # Microphone recording
         st.markdown("### Record Audio", unsafe_allow_html=True)
-       recorded_audio_en_hi = st.audio_input("Record audio using your mic")    
-
+        recorded_audio_en_hi = st.audio_input("Record audio using your microphone", key="audio_input_en_hi")
         if recorded_audio_en_hi:
             st.session_state.recorded_audio = recorded_audio_en_hi.getvalue()
             st.audio(st.session_state.recorded_audio, format="audio/wav")
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
                 tmpfile.write(st.session_state.recorded_audio)
                 y, sr = sf.read(tmpfile.name)
-                rms = np.sqrt(np.mean(y**2))
+                rms = np.sqrt(np.mean(y ** 2))
                 st.write(f"Recorded audio RMS amplitude: {rms:.6f}")
                 if rms < 1e-4:
                     st.warning("Warning: Recorded audio seems silent!")
@@ -366,7 +365,7 @@ def main():
                     logger.error(f"Error cleaning up temporary file: {str(e)}")
 
         uploaded_file_en_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_en_hi")
-        
+
         if st.button("Transcribe with Speech2Text", key="transcribe_en_hi"):
             audio = st.session_state.recorded_audio if st.session_state.recorded_audio else uploaded_file_en_hi
             if audio:
@@ -377,7 +376,7 @@ def main():
                 st.session_state.recorded_audio = None
             else:
                 st.error("No audio input provided. Please record or upload an audio file.")
-        
+
         st.text_area("Transcription", st.session_state.transcription_en_hi, height=150, disabled=True, key="transcription_en_hi")
         col3, col4 = st.columns(2)
         with col3:
@@ -405,7 +404,7 @@ def main():
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
                 tmpfile.write(st.session_state.recorded_audio)
                 y, sr = sf.read(tmpfile.name)
-                rms = np.sqrt(np.mean(y**2))
+                rms = np.sqrt(np.mean(y ** 2))
                 st.write(f"Recorded audio RMS amplitude: {rms:.6f}")
                 if rms < 1e-4:
                     st.warning("Warning: Recorded audio seems silent!")
@@ -418,7 +417,7 @@ def main():
                     logger.error(f"Error cleaning up temporary file: {str(e)}")
 
         uploaded_file_hi = st.file_uploader("Or upload an audio file", type=["wav", "mp3"], key="upload_hi")
-        
+
         if st.button("Transcribe with Speech2Text", key="transcribe_hi"):
             audio = st.session_state.recorded_audio if st.session_state.recorded_audio else uploaded_file_hi
             if audio:
@@ -429,7 +428,7 @@ def main():
                 st.session_state.recorded_audio = None
             else:
                 st.error("No audio input provided. Please record or upload an audio file.")
-        
+
         st.text_area("Transcription", st.session_state.transcription_hi, height=150, disabled=True, key="transcription_hi")
         col5, col6 = st.columns(2)
         with col5:
@@ -437,5 +436,7 @@ def main():
         with col6:
             st.metric("Processing Time", st.session_state.transcription_proc_time_hi)
 
+
 if __name__ == "__main__":
     main()
+
